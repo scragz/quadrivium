@@ -1,4 +1,4 @@
-# Track and Field — Dev Notes
+# Quadrivium — Dev Notes
 
 Filter-based audio sequencer. Upload samples to lanes, place triggers on a timeline, each trigger fires a filter envelope sweep (attack → peak → decay). Direction parameter (-1 swell / +1 ping) controls the envelope shape.
 

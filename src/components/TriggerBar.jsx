@@ -10,10 +10,11 @@ const VELOCITY_RADIUS = { high: 8, med: 5.5, low: 3.5 }
 const VELOCITY_HIT = { high: 4, med: 6, low: 8 }
 
 function triggerColor(direction) {
+  // Swell (-1) violet → Ping (+1) pale luminous
   const t = (direction + 1) / 2
-  const r = Math.round(lerp(0xFF, 0xFF, t))
-  const g = Math.round(lerp(0xE5, 0xFF, t))
-  const b = Math.round(lerp(0x66, 0xFF, t))
+  const r = Math.round(lerp(0x9a, 0xd9, t))
+  const g = Math.round(lerp(0x86, 0xf2, t))
+  const b = Math.round(lerp(0xe6, 0xff, t))
   return `rgb(${r},${g},${b})`
 }
 
@@ -239,28 +240,24 @@ export function TriggerBar({ laneId, triggers, playheadPosition, onAdd, onUpdate
       style={{ display: 'block', cursor: 'crosshair', touchAction: 'none' }}
     >
       <defs>
-        {/* Running track — tartan rubber surface texture */}
-        <pattern id={`track-${laneId}`} x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse">
-          <rect width="20" height="20" fill="#B84018" />
-          <rect width="20" height="10" fill="#C84820" />
-          {/* Subtle granule dots for tartan texture */}
-          <circle cx="5"  cy="5"  r="1" fill="rgba(255,120,60,0.3)" />
-          <circle cx="15" cy="5"  r="1" fill="rgba(80,10,0,0.2)" />
-          <circle cx="10" cy="15" r="1" fill="rgba(255,120,60,0.3)" />
-          <circle cx="0"  cy="15" r="1" fill="rgba(80,10,0,0.2)" />
-          <circle cx="20" cy="15" r="1" fill="rgba(80,10,0,0.2)" />
-        </pattern>
+        {/* Void surface — deep gradient with a faint central glow */}
+        <linearGradient id={`void-${laneId}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#12111c" />
+          <stop offset="0.5" stopColor="#0d0c15" />
+          <stop offset="1" stopColor="#0a0a11" />
+        </linearGradient>
+        <radialGradient id={`halo-${laneId}`} cx="50%" cy="50%" r="70%">
+          <stop offset="0" stopColor="rgba(124,92,255,0.10)" />
+          <stop offset="1" stopColor="rgba(124,92,255,0)" />
+        </radialGradient>
       </defs>
 
-      {/* Track surface background */}
-      <rect width="100%" height={BAR_HEIGHT} fill={`url(#track-${laneId})`} />
+      {/* Void background */}
+      <rect width="100%" height={BAR_HEIGHT} fill={`url(#void-${laneId})`} />
+      <rect width="100%" height={BAR_HEIGHT} fill={`url(#halo-${laneId})`} />
 
-      {/* Lane lines (white stripes like track markings) */}
-      <rect x="0" y="0" width="100%" height="3" fill="rgba(255,255,255,0.7)" />
-      <rect x="0" y={BAR_HEIGHT - 3} width="100%" height="3" fill="rgba(255,255,255,0.7)" />
-
-      {/* Center line */}
-      <line x1="0" y1={cy} x2="100%" y2={cy} stroke="rgba(255,255,255,0.3)" strokeWidth="1" strokeDasharray="4,8" />
+      {/* Center meridian */}
+      <line x1="0" y1={cy} x2="100%" y2={cy} stroke="rgba(185,163,255,0.16)" strokeWidth="1" strokeDasharray="2,6" />
 
       {/* Grid lines at 25%, 50%, 75% */}
       {[0.25, 0.5, 0.75].map(p => (
@@ -268,7 +265,7 @@ export function TriggerBar({ laneId, triggers, playheadPosition, onAdd, onUpdate
           key={p}
           x1={`${p * 100}%`} y1="0"
           x2={`${p * 100}%`} y2={BAR_HEIGHT}
-          stroke="rgba(255,255,255,0.25)" strokeWidth="0.5" strokeDasharray="2,4"
+          stroke="rgba(185,163,255,0.10)" strokeWidth="0.5" strokeDasharray="2,5"
         />
       ))}
 
@@ -304,15 +301,14 @@ export function TriggerBar({ laneId, triggers, playheadPosition, onAdd, onUpdate
               cx={`${t.position * 100}%`} cy={cy}
               r={r}
               fill={color}
-              opacity={isFired ? 1 : 0.9}
-              style={{ filter: isFired ? `drop-shadow(0 0 4px ${color})` : 'none' }}
+              opacity={isFired ? 1 : 0.92}
+              style={{ filter: `drop-shadow(0 0 ${isFired ? 6 : 3}px ${color})` }}
             />
             <circle
               cx={`${t.position * 100}%`} cy={cy}
-              r={r - 2}
-              fill="none"
-              stroke="rgba(0,0,0,0.4)"
-              strokeWidth="1"
+              r={Math.max(1, r - 2.5)}
+              fill="rgba(255,255,255,0.85)"
+              opacity={isFired ? 0.9 : 0.55}
             />
           </g>
         )

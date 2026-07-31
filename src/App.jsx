@@ -35,29 +35,31 @@ export default function App() {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' }}>
 
-      {/* ── Header / HUD ── */}
+      {/* ── Header ── */}
       <header style={{
-        background: 'var(--hud-bg)',
-        borderBottom: '3px solid var(--accent)',
-        boxShadow: '0 3px 0 var(--accent-dim)',
+        background: 'rgba(10, 10, 18, 0.72)',
+        backdropFilter: 'blur(10px)',
+        WebkitBackdropFilter: 'blur(10px)',
+        borderBottom: '1px solid var(--border)',
         position: 'sticky',
         top: 0,
         zIndex: 10,
       }}>
-        {/* Main header row — logo + controls */}
+        {/* Main header row — wordmark + controls */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
           gap: '12px',
-          padding: '8px 12px',
+          padding: '12px 16px',
         }}>
-          {/* T&F Logo */}
+          {/* Wordmark */}
           <span style={{
-            fontSize: '15px',
+            fontSize: '16px',
             fontFamily: 'var(--font-brand)',
             color: 'var(--text)',
-            letterSpacing: '0.28em',
+            letterSpacing: '0.34em',
             whiteSpace: 'nowrap',
+            textShadow: '0 0 20px rgba(185, 163, 255, 0.35)',
           }}>QUADRIVIUM</span>
 
           {/* BPM knob */}
@@ -76,14 +78,15 @@ export default function App() {
             onClick={handleTogglePlay}
             style={{
               background: playing ? 'var(--accent)' : 'transparent',
-              border: `2px solid ${playing ? 'var(--accent)' : 'var(--border)'}`,
-              color: playing ? 'var(--hud-bg)' : 'var(--text)',
-              padding: '8px 10px',
+              border: `1px solid ${playing ? 'var(--accent)' : 'var(--border-strong)'}`,
+              color: playing ? '#0a0a12' : 'var(--text)',
+              padding: '8px 12px',
               fontSize: '14px',
               lineHeight: 1,
+              borderRadius: '3px',
               cursor: 'pointer',
-              transition: 'all 0.1s',
-              boxShadow: playing ? '3px 3px 0 var(--accent-dim)' : '3px 3px 0 #000',
+              transition: 'all 0.15s',
+              boxShadow: playing ? '0 0 16px rgba(185, 163, 255, 0.45)' : 'none',
               flexShrink: 0,
             }}
           >
@@ -112,16 +115,16 @@ export default function App() {
       </main>
 
       <footer style={{
-        padding: '6px 16px',
-        borderTop: '2px solid rgba(255,255,255,0.2)',
-        fontSize: '10px',
-        color: 'var(--accent-dim)',
-        letterSpacing: '0.24em',
+        padding: '10px 16px',
+        borderTop: '1px solid var(--border)',
+        fontSize: '9px',
+        color: 'var(--text-dim)',
+        letterSpacing: '0.30em',
         textAlign: 'center',
         fontFamily: 'var(--font-brand)',
         background: 'var(--hud-bg)',
       }}>
-        TM &amp; © KONAMI · FILTER SEQUENCER
+        ARITHMETIC · GEOMETRY · MUSIC · ASTRONOMY
       </footer>
     </div>
   )
