@@ -1,7 +1,7 @@
 import { useCallback, useRef } from 'react'
-import { useAppState } from './state/useAppState.js'
-import { Lane } from './components/Lane.jsx'
 import { Knob } from './components/Knob.jsx'
+import { Lane } from './components/Lane.jsx'
+import { useAppState } from './state/useAppState.js'
 
 export default function App() {
   const {
@@ -59,7 +59,7 @@ export default function App() {
             textShadow: '1px 1px 0 #770000',
             letterSpacing: '-0.02em',
             whiteSpace: 'nowrap',
-          }}>TRACK <span style={{ color: '#FFE566' }}>&amp;</span> FIELD</span>
+          }}>QUADRIVIUM</span>
 
           {/* BPM knob */}
           <div style={{ display: 'flex', alignItems: 'center', marginLeft: 'auto' }}>
