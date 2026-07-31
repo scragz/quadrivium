@@ -36,14 +36,15 @@ export function Lane({
 
   return (
     <div style={{
-      background: 'var(--surface)',
-      border: '2px solid var(--border)',
-      borderRadius: '0',
-      padding: '8px 12px 10px',
+      background: 'linear-gradient(180deg, var(--surface-alt), var(--surface))',
+      border: '1px solid var(--border)',
+      borderRadius: '6px',
+      padding: '10px 12px 12px',
       display: 'flex',
       flexDirection: 'column',
-      gap: '6px',
+      gap: '8px',
       minWidth: 0,
+      boxShadow: '0 1px 0 rgba(255,255,255,0.02) inset, 0 2px 12px rgba(0,0,0,0.35)',
     }}>
 
       <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>

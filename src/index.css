@@ -14,32 +14,29 @@
 :root {
   --font-brand: 'Cantrip Mono', 'JetBrains Mono', monospace;
 
-  --hud-bg: #050508;           /* Near-black — HUD / NES screen */
-  --bg: #28b014;               /* Bright grass green — infield */
-  --bg-stripe: #22961000;      /* Mowed stripe (slightly darker) */
-  --surface: #7A3210;          /* Tartan track brown — lane panels */
-  --surface-alt: #9B4418;      /* Lighter track brown */
-  --border: #ffffff;           /* White — lane markings */
-  --accent: #FFE566;           /* Gold — finish line, score numbers */
-  --accent-dim: #A07A00;       /* Dark gold */
-  --text: #ffffff;             /* White */
-  --text-dim: #D4956A;         /* Warm tan */
-  --ping: #ffffff;
-  --swell: #FFE566;
-  --glow-ping: rgba(255, 255, 255, 0.6);
-  --glow-swell: rgba(255, 229, 102, 0.6);
+  --bg: #07070c;               /* Deep void */
+  --hud-bg: #0a0a12;           /* Header / footer chrome */
+  --surface: #101019;          /* Lane panel */
+  --surface-alt: #16161f;      /* Raised control well */
+  --border: rgba(183, 167, 255, 0.14);      /* Faint lavender hairline */
+  --border-strong: rgba(183, 167, 255, 0.30);
+  --accent: #b9a3ff;           /* Moonlit amethyst */
+  --accent-dim: #675a9e;       /* Dimmed violet */
+  --text: #e9e7f4;             /* Moonlight */
+  --text-dim: #8b86a8;         /* Muted lavender-grey */
+  --ping: #d9f2ff;             /* Pale luminous — +1 */
+  --swell: #9a86e6;            /* Violet — -1 */
+  --glow-ping: rgba(217, 242, 255, 0.5);
+  --glow-swell: rgba(154, 134, 230, 0.5);
 }
 
 body {
   background-color: var(--bg);
-  /* Mowed-lawn alternating stripes — two green shades like real turf */
-  background-image: repeating-linear-gradient(
-    180deg,
-    transparent 0px,
-    transparent 14px,
-    rgba(0, 40, 0, 0.18) 14px,
-    rgba(0, 40, 0, 0.18) 28px
-  );
+  /* Faint arcane aura — two soft glows rising from top and bottom */
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(124, 92, 255, 0.10), transparent 60%),
+    radial-gradient(ellipse 90% 40% at 50% 110%, rgba(80, 120, 200, 0.06), transparent 55%);
+  background-attachment: fixed;
   color: var(--text);
   font-family: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
   margin: 0;
@@ -52,43 +49,43 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
 }
 
 .knob {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: #3D1505;
-  border: 2px solid var(--border);
+  background: radial-gradient(circle at 50% 38%, #1c1b28, #0d0d15);
+  border: 1px solid var(--border-strong);
   position: relative;
   cursor: ns-resize;
-  box-shadow: 0 0 0 1px #120704, 0 0 6px var(--accent-dim);
-  transition: border-color 0.1s;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(0, 0, 0, 0.3);
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .knob:hover {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px #120704, 0 0 10px var(--accent);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6), 0 0 12px rgba(185, 163, 255, 0.30);
 }
 
 .knob-indicator {
   position: absolute;
   width: 2px;
-  height: 10px;
+  height: 11px;
   background: var(--accent);
-  border-radius: 0;
+  border-radius: 1px;
   left: 50%;
-  top: 6px;
+  top: 5px;
   transform-origin: 50% calc(100% + 4px);
   transform: translateX(-50%);
-  box-shadow: 0 0 4px var(--accent);
+  box-shadow: 0 0 5px var(--accent);
 }
 
-/* Trigger bar — background now comes from SVG grass pattern */
+/* Trigger bar — background comes from the SVG void gradient */
 .trigger-bar {
-  border: 0;
-  border-radius: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
   position: relative;
   overflow: hidden;
   cursor: crosshair;
@@ -99,31 +96,32 @@ body {
   width: 4px;
   height: 4px;
 }
-::-webkit-scrollbar-track { background: var(--hud-bg); }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 0; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
 
 /* Source / waveform / filter selector pills */
 .source-pill {
   background: transparent;
-  border: 1px solid rgba(255,255,255,0.4);
+  border: 1px solid var(--border);
   color: var(--text-dim);
-  border-radius: 0;
-  padding: 3px 7px;
+  border-radius: 3px;
+  padding: 3px 8px;
   font-size: 8px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   cursor: pointer;
   font-family: inherit;
-  transition: all 0.1s;
+  transition: all 0.15s;
 }
 
 .source-pill:hover {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   color: var(--text);
 }
 
 .source-pill.active {
   border-color: var(--accent);
   color: var(--accent);
-  background: rgba(255, 229, 102, 0.15);
+  background: rgba(185, 163, 255, 0.10);
+  box-shadow: 0 0 10px rgba(185, 163, 255, 0.15);
 }
