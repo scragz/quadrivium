@@ -2,7 +2,18 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Brand display face — Cantrip Mono */
+@font-face {
+  font-family: 'Cantrip Mono';
+  src: url('./assets/fonts/cantrip-mono.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
+  --font-brand: 'Cantrip Mono', 'JetBrains Mono', monospace;
+
   --hud-bg: #050508;           /* Near-black — HUD / NES screen */
   --bg: #28b014;               /* Bright grass green — infield */
   --bg-stripe: #22961000;      /* Mowed stripe (slightly darker) */

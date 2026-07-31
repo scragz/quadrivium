@@ -53,11 +53,10 @@ export default function App() {
         }}>
           {/* T&F Logo */}
           <span style={{
-            fontSize: '9px',
-            fontFamily: "'Press Start 2P', monospace",
-            color: '#EE4444',
-            textShadow: '1px 1px 0 #770000',
-            letterSpacing: '-0.02em',
+            fontSize: '15px',
+            fontFamily: 'var(--font-brand)',
+            color: 'var(--text)',
+            letterSpacing: '0.28em',
             whiteSpace: 'nowrap',
           }}>QUADRIVIUM</span>
 
@@ -115,11 +114,11 @@ export default function App() {
       <footer style={{
         padding: '6px 16px',
         borderTop: '2px solid rgba(255,255,255,0.2)',
-        fontSize: '8px',
+        fontSize: '10px',
         color: 'var(--accent-dim)',
-        letterSpacing: '0.08em',
+        letterSpacing: '0.24em',
         textAlign: 'center',
-        fontFamily: "'Press Start 2P', monospace",
+        fontFamily: 'var(--font-brand)',
         background: 'var(--hud-bg)',
       }}>
         TM &amp; © KONAMI · FILTER SEQUENCER
