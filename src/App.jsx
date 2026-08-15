@@ -1,130 +1,112 @@
 import { useCallback, useRef } from 'react'
 import { Knob } from './components/Knob.jsx'
-import { Lane } from './components/Lane.jsx'
+import { SoundBox } from './components/SoundBox.jsx'
 import { useAppState } from './state/useAppState.js'
+import { BOXES } from './boxes/definitions.js'
+import { formatVolume } from './audio/levels.js'
+
+const BPM_DEF = {
+  key: 'bpm',
+  label: 'TEMPO',
+  min: 40,
+  max: 260,
+  def: 120,
+  curve: 'lin',
+  step: 1,
+  format: (v) => `${Math.round(v)}`,
+}
+
+const MASTER_DEF = {
+  key: 'master',
+  label: 'MASTER',
+  min: 0,
+  max: 1,
+  def: 0.8,
+  curve: 'lin',
+  unit: 'dB',
+  format: formatVolume,
+}
 
 export default function App() {
   const {
     bpm,
     setBpm,
+    masterVolume,
+    setMasterVolume,
     playing,
     togglePlay,
     playheadPosition,
-    lanes,
-    updateLaneSample,
-    updateLaneSourceType,
-    updateLaneFrequency,
-    updateLaneVolume,
+    boxes,
+    setParam,
+    setSwitch,
+    setLevel,
+    toggleMuted,
+    setSample,
+    clearSample,
     addTrigger,
     updateTrigger,
     cycleVelocity,
     deleteTrigger,
+    clearTriggers,
   } = useAppState()
 
-  const lanesRef = useRef(lanes)
-  lanesRef.current = lanes
+  const boxesRef = useRef(boxes)
+  boxesRef.current = boxes
 
   const handleTogglePlay = useCallback(() => {
-    togglePlay(lanesRef.current)
+    togglePlay(boxesRef.current)
   }, [togglePlay])
 
-  const handleAddTrigger = useCallback((laneId, position) => {
-    return addTrigger(laneId, position)
-  }, [addTrigger])
-
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' }}>
+    <div className="app">
+      <header className="app-header">
+        <div className="wordmark">
+          <span className="wordmark-text">QUADRIVIUM</span>
+          <span className="wordmark-sub">FOUR BOXES · ONE VOID</span>
+        </div>
 
-      {/* ── Header ── */}
-      <header style={{
-        background: 'rgba(10, 10, 18, 0.72)',
-        backdropFilter: 'blur(10px)',
-        WebkitBackdropFilter: 'blur(10px)',
-        borderBottom: '1px solid var(--border)',
-        position: 'sticky',
-        top: 0,
-        zIndex: 10,
-      }}>
-        {/* Main header row — wordmark + controls */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '12px',
-          padding: '12px 16px',
-        }}>
-          {/* Wordmark */}
-          <span style={{
-            fontSize: '16px',
-            fontFamily: 'var(--font-brand)',
-            color: 'var(--text)',
-            letterSpacing: '0.34em',
-            whiteSpace: 'nowrap',
-            textShadow: '0 0 20px rgba(185, 163, 255, 0.35)',
-          }}>QUADRIVIUM</span>
-
-          {/* BPM knob */}
-          <div style={{ display: 'flex', alignItems: 'center', marginLeft: 'auto' }}>
-            <Knob
-              label="BPM"
-              min={60} max={300}
-              value={bpm}
-              onChange={setBpm}
-              decimals={0}
-            />
-          </div>
-
-          {/* Play/Stop — icon only */}
+        <div className="transport">
+          <Knob def={BPM_DEF} value={bpm} onChange={setBpm} size={36} />
+          <Knob def={MASTER_DEF} value={masterVolume} onChange={setMasterVolume} size={36} />
           <button
+            type="button"
+            className={`play ${playing ? 'on' : ''}`}
             onClick={handleTogglePlay}
-            style={{
-              background: playing ? 'var(--accent)' : 'transparent',
-              border: `1px solid ${playing ? 'var(--accent)' : 'var(--border-strong)'}`,
-              color: playing ? '#0a0a12' : 'var(--text)',
-              padding: '8px 12px',
-              fontSize: '14px',
-              lineHeight: 1,
-              borderRadius: '3px',
-              cursor: 'pointer',
-              transition: 'all 0.15s',
-              boxShadow: playing ? '0 0 16px rgba(185, 163, 255, 0.45)' : 'none',
-              flexShrink: 0,
-            }}
+            aria-label={playing ? 'Stop' : 'Play'}
           >
             {playing ? '■' : '▶'}
           </button>
         </div>
       </header>
 
-      {/* Lanes */}
-      <main style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, minWidth: 0, overflow: 'hidden' }}>
-        {lanes.map((lane) => (
-          <Lane
-            key={lane.id}
-            lane={lane}
-            playheadPosition={playheadPosition}
-            onSampleUpload={updateLaneSample}
-            onSourceTypeChange={updateLaneSourceType}
-            onFrequencyChange={updateLaneFrequency}
-            onVolumeChange={updateLaneVolume}
-            onAddTrigger={handleAddTrigger}
-            onUpdateTrigger={updateTrigger}
-            onDeleteTrigger={deleteTrigger}
-            onCycleVelocity={cycleVelocity}
-          />
-        ))}
+      <main className="rack">
+        {BOXES.map((def) => {
+          const state = boxes.find((b) => b.id === def.id)
+          if (!state) return null
+          return (
+            <SoundBox
+              key={def.id}
+              def={def}
+              state={state}
+              playheadPosition={playheadPosition}
+              onParamChange={setParam}
+              onSwitchChange={setSwitch}
+              onLevelChange={setLevel}
+              onToggleMuted={toggleMuted}
+              onSample={setSample}
+              onClearSample={clearSample}
+              onAddTrigger={addTrigger}
+              onUpdateTrigger={updateTrigger}
+              onDeleteTrigger={deleteTrigger}
+              onCycleVelocity={cycleVelocity}
+              onClearTriggers={clearTriggers}
+            />
+          )
+        })}
       </main>
 
-      <footer style={{
-        padding: '10px 16px',
-        borderTop: '1px solid var(--border)',
-        fontSize: '9px',
-        color: 'var(--text-dim)',
-        letterSpacing: '0.30em',
-        textAlign: 'center',
-        fontFamily: 'var(--font-brand)',
-        background: 'var(--hud-bg)',
-      }}>
-        ARITHMETIC · GEOMETRY · MUSIC · ASTRONOMY
+      <footer className="app-footer">
+        CLICK THE VOID TO PLACE · DRAG UP TO SWELL, DOWN TO SNAP · TAP FOR VELOCITY · RIGHT-CLICK TO ERASE
       </footer>
     </div>
   )

@@ -1,4 +1,6 @@
 import * as Tone from 'tone'
+import { createVoice } from './voices/index.js'
+import { volumeToGain } from './levels.js'
 
 // Derive trigger envelope params from direction (-1 snappy → 0 neutral/ping → +1 swell)
 // Neutral (direction=0) is an LPG-style ping: fast attack, short-ish decay.
@@ -24,130 +26,148 @@ function lerp(a, b, t) {
 const VELOCITY_GAIN = { high: 1.0, med: 0.5, low: 0.2 }
 
 // LPG resting frequency (gate closed position)
-const LPG_BASE = 80
+const LPG_BASE = 70
+// Floor for exponential ramps — WebAudio can't ramp to or through zero.
+const EPSILON = 1e-4
 
-// Per-lane audio nodes
-class LaneAudio {
-  constructor(destination) {
-    this.gateGain = new Tone.Gain(0)  // amplitude gate, starts silent
-    this.lpg = new Tone.Filter({      // low-pass gate filter
-      type: 'lowpass',
-      frequency: LPG_BASE,
-      Q: 1,
-    })
-    this.gain = new Tone.Gain(0.8)
+/**
+ * One box: voice → gate → low-pass gate → voice FX → limiter → level → master.
+ *
+ * The FX sit after the gate on purpose, so reverb and comb tails ring on past
+ * the envelope the way they would on a real pedal.
+ */
+class BoxChannel {
+  constructor(destination, boxId) {
+    this.boxId = boxId
+    this.voice = createVoice(boxId)
 
-    // Bandpass filter for tuned noise (noise → noiseFilter → gateGain)
-    this.noiseFilter = new Tone.Filter({
-      type: 'bandpass',
-      frequency: 220,
-      Q: 8,
-    })
-    this.noiseFilter.connect(this.gateGain)
+    this.voiceGain = new Tone.Gain(1)   // voice source, muted when a sample loads
+    this.sampleGain = new Tone.Gain(0)  // uploaded sample, if any
+    this.gateGain = new Tone.Gain(0)    // amplitude gate, starts silent
+    this.lpg = new Tone.Filter({ type: 'lowpass', frequency: LPG_BASE, Q: 1.2 })
+    // Catches what the analytic trims can't predict: wavefolding, bit crush
+    // and resonance all add level in ways that depend on the input.
+    this.limiter = new Tone.Limiter(-3)
+    this.gain = new Tone.Gain(volumeToGain(0.8))
 
+    this.voice.sourceOut.connect(this.voiceGain)
+    this.voiceGain.connect(this.gateGain)
+    this.sampleGain.connect(this.gateGain)
     this.gateGain.connect(this.lpg)
-    this.lpg.connect(this.gain)
+    this.lpg.connect(this.voice.fxIn)
+    this.voice.fxOut.connect(this.limiter)
+    this.limiter.connect(this.gain)
     this.gain.connect(destination)
 
-    this.source = null
-    this._runningSourceType = null
+    this.player = null
     this.buffer = null
-    this.sourceType = 'noise'  // 'noise' | 'tone' | 'sample'
-    this.frequency = 220       // Hz (tone pitch or noise bandpass center)
+    this.useSample = false
+    this.muted = false
+    this.level = 0.8
+  }
+
+  setControls(params, switches) {
+    this.voice.set(params, switches)
+  }
+
+  setLevel(position) {
+    this.level = position
+    if (!this.muted) this.gain.gain.rampTo(volumeToGain(position), 0.05)
+  }
+
+  setMuted(muted) {
+    this.muted = muted
+    this.gain.gain.rampTo(muted ? 0 : volumeToGain(this.level), 0.04)
   }
 
   setBuffer(audioBuffer) {
     this.buffer = audioBuffer
+    this.useSample = !!audioBuffer
+    this.voiceGain.gain.rampTo(this.useSample ? 0 : 1, 0.05)
+    this.sampleGain.gain.rampTo(this.useSample ? 1 : 0, 0.05)
   }
 
-  setVolume(v) {
-    this.gain.gain.rampTo(v, 0.05)
+  clearBuffer() {
+    this.buffer = null
+    this.useSample = false
+    this._stopPlayer()
+    this.voiceGain.gain.rampTo(1, 0.05)
+    this.sampleGain.gain.rampTo(0, 0.05)
   }
 
-  setFrequency(hz) {
-    this.frequency = hz
-    if (this._runningSourceType === 'tone' && this.source) {
-      this.source.frequency.rampTo(hz, 0.05)
-    } else if (this._runningSourceType === 'noise') {
-      this.noiseFilter.frequency.rampTo(hz, 0.05)
+  _stopPlayer() {
+    if (!this.player) return
+    try { this.player.unsync() } catch (_) {}
+    try { this.player.stop() } catch (_) {}
+    this.player.dispose()
+    this.player = null
+  }
+
+  start(loopEnd) {
+    this.voice.start()
+    this._stopPlayer()
+    if (this.useSample && this.buffer) {
+      this.player = new Tone.Player(this.buffer)
+      this.player.loop = true
+      this.player.loopEnd = Math.min(this.buffer.duration, loopEnd)
+      this.player.connect(this.sampleGain)
+      this.player.sync().start(0)
     }
   }
 
-  startSource(loopEnd) {
-    this.stopSource()
-
-    if (this.sourceType === 'sample' && this.buffer) {
-      this.source = new Tone.Player(this.buffer)
-      this.source.loop = true
-      this.source.loopEnd = Math.min(this.buffer.duration, loopEnd)
-      this.source.connect(this.gateGain)
-      this.source.sync().start(0)
-      this._runningSourceType = 'sample'
-    } else if (this.sourceType === 'tone') {
-      this.source = new Tone.Oscillator(this.frequency, 'square')
-      this.source.connect(this.gateGain)
-      this.source.start()
-      this._runningSourceType = 'tone'
-    } else {
-      // noise → noiseFilter → gateGain
-      this.noiseFilter.frequency.value = this.frequency
-      this.source = new Tone.Noise('white')
-      this.source.connect(this.noiseFilter)
-      this.source.start()
-      this._runningSourceType = 'noise'
-    }
-  }
-
-  stopSource() {
-    if (this.source) {
-      try { this.source.unsync() } catch (_) {}
-      try { this.source.stop() } catch (_) {}
-      this.source.disconnect()
-      this.source = null
-      this._runningSourceType = null
-    }
+  stop() {
+    this.voice.stop()
+    this._stopPlayer()
   }
 
   fireTrigger(time, direction, velocity = 'high') {
     const { attack, decay, peak } = getTriggerShape(direction)
-    const now = Tone.now()
     const gainPeak = VELOCITY_GAIN[velocity] ?? 1.0
+    const release = time + attack + decay
 
+    // cancelAndHoldAtTime retriggers from wherever the envelope currently is,
+    // instead of the hard reset to zero that used to click on overlapping hits.
     const freq = this.lpg.frequency
-    freq.cancelScheduledValues(0)
-    freq.setValueAtTime(LPG_BASE, now)
-    freq.setValueAtTime(LPG_BASE, time)
+    freq.cancelAndHoldAtTime(time)
+    freq.setValueAtTime(Math.max(freq.value, LPG_BASE), time)
     freq.linearRampToValueAtTime(peak, time + attack)
-    freq.linearRampToValueAtTime(LPG_BASE, time + attack + decay)
+    freq.exponentialRampToValueAtTime(LPG_BASE, release)
 
     const g = this.gateGain.gain
-    g.cancelScheduledValues(0)
-    g.setValueAtTime(0, now)
-    g.setValueAtTime(0, time)
+    g.cancelAndHoldAtTime(time)
+    g.setValueAtTime(Math.max(g.value, EPSILON), time)
     g.linearRampToValueAtTime(gainPeak, time + attack)
-    g.linearRampToValueAtTime(0, time + attack + decay)
+    // Exponential decay reads as a natural fall; the short linear tail after it
+    // is what actually reaches silence, since exponentials never do.
+    g.exponentialRampToValueAtTime(EPSILON, release)
+    g.linearRampToValueAtTime(0, release + 0.008)
   }
 
-  resetCutoff() {
+  resetGate() {
+    this.lpg.frequency.cancelScheduledValues(0)
+    this.gateGain.gain.cancelScheduledValues(0)
     this.lpg.frequency.rampTo(LPG_BASE, 0.1)
     this.gateGain.gain.rampTo(0, 0.1)
   }
 
   dispose() {
-    this.stopSource()
-    this.noiseFilter.dispose()
-    this.gateGain.dispose()
-    this.lpg.dispose()
-    this.gain.dispose()
+    this.stop()
+    this.voice.dispose()
+    ;[this.voiceGain, this.sampleGain, this.gateGain, this.lpg, this.limiter, this.gain]
+      .forEach((n) => n.dispose())
   }
 }
 
 // Main audio engine
 class AudioEngine {
   constructor() {
-    this.master = new Tone.Gain(0.9)
-    this.master.toDestination()
-    this.lanes = new Map()      // laneId → LaneAudio
+    // Four boxes hitting at once needs headroom; the limiter is the backstop.
+    this.master = new Tone.Gain(volumeToGain(0.8))
+    this.masterLimiter = new Tone.Limiter(-1)
+    this.master.connect(this.masterLimiter)
+    this.masterLimiter.toDestination()
+
+    this.channels = new Map() // boxId → BoxChannel
     this.scheduledEvents = []
     this.bpm = 120
     this.barLength = this._calcBarLength(120)
@@ -164,70 +184,62 @@ class AudioEngine {
   setBpm(bpm) {
     this.bpm = bpm
     this.barLength = this._calcBarLength(bpm)
-    Tone.getTransport().bpm.value = bpm
+    const transport = Tone.getTransport()
+    transport.bpm.value = bpm
+    if (this.playing) transport.loopEnd = this.barLength
   }
 
-  addLane(id) {
-    if (!this.lanes.has(id)) {
-      this.lanes.set(id, new LaneAudio(this.master))
+  setMasterVolume(position) {
+    this.master.gain.rampTo(volumeToGain(position), 0.05)
+  }
+
+  addBox(id) {
+    if (!this.channels.has(id)) {
+      this.channels.set(id, new BoxChannel(this.master, id))
     }
   }
 
-  removeLane(id) {
-    const lane = this.lanes.get(id)
-    if (lane) {
-      lane.dispose()
-      this.lanes.delete(id)
-    }
+  getBox(id) {
+    return this.channels.get(id)
   }
 
-  getLane(id) {
-    return this.lanes.get(id)
+  setBoxControls(id, params, switches) {
+    this.channels.get(id)?.setControls(params, switches)
   }
 
-  setLaneBuffer(id, audioBuffer) {
-    const lane = this.lanes.get(id)
-    if (lane) {
-      lane.setBuffer(audioBuffer)
-      lane.sourceType = 'sample'
-      if (this.playing) {
-        lane.startSource(this.barLength)
-      }
-    }
+  setBoxLevel(id, position) {
+    this.channels.get(id)?.setLevel(position)
   }
 
-  setLaneSourceType(id, type) {
-    const lane = this.lanes.get(id)
-    if (lane) {
-      lane.sourceType = type
-      if (this.playing) {
-        lane.startSource(this.barLength)
-      }
-    }
+  setBoxMuted(id, muted) {
+    this.channels.get(id)?.setMuted(muted)
   }
 
-  setLaneFrequency(id, hz) {
-    this.lanes.get(id)?.setFrequency(hz)
+  setBoxBuffer(id, audioBuffer) {
+    const channel = this.channels.get(id)
+    if (!channel) return
+    channel.setBuffer(audioBuffer)
+    if (this.playing) channel.start(this.barLength)
   }
 
-  setLaneVolume(id, v) {
-    this.lanes.get(id)?.setVolume(v)
+  clearBoxBuffer(id) {
+    this.channels.get(id)?.clearBuffer()
   }
 
-  // Schedule all triggers for the lanes
-  _scheduleTriggers(lanesData) {
+  // Schedule all triggers for the boxes
+  _scheduleTriggers(boxesData) {
     this._clearScheduled()
 
     const transport = Tone.getTransport()
 
-    lanesData.forEach(lane => {
-      const laneAudio = this.lanes.get(lane.id)
-      if (!laneAudio) return
+    boxesData.forEach((box) => {
+      const channel = this.channels.get(box.id)
+      if (!channel) return
 
-      lane.triggers.forEach(trigger => {
+      box.triggers.forEach((trigger) => {
         const triggerTime = trigger.position * this.barLength
         const eventId = transport.schedule((time) => {
-          laneAudio.fireTrigger(time, trigger.direction, trigger.velocity ?? 'high')
+          channel.fireTrigger(time, trigger.direction, trigger.velocity ?? 'high')
         }, triggerTime)
         this.scheduledEvents.push(eventId)
       })
@@ -236,13 +248,13 @@ class AudioEngine {
 
   _clearScheduled() {
     const transport = Tone.getTransport()
-    this.scheduledEvents.forEach(id => {
+    this.scheduledEvents.forEach((id) => {
       try { transport.clear(id) } catch (_) {}
     })
     this.scheduledEvents = []
   }
 
-  async start(lanesData) {
+  async start(boxesData) {
     await Tone.start()
     const transport = Tone.getTransport()
 
@@ -251,11 +263,9 @@ class AudioEngine {
     transport.loopStart = 0
     transport.loopEnd = this.barLength
 
-    this.lanes.forEach((laneAudio) => {
-      laneAudio.startSource(this.barLength)
-    })
+    this.channels.forEach((channel) => channel.start(this.barLength))
 
-    this._scheduleTriggers(lanesData)
+    this._scheduleTriggers(boxesData)
     transport.start()
     this.playing = true
     this._startPlayheadRaf()
@@ -266,18 +276,18 @@ class AudioEngine {
     transport.stop()
     this._clearScheduled()
 
-    this.lanes.forEach(laneAudio => {
-      laneAudio.stopSource()
-      laneAudio.resetCutoff()
+    this.channels.forEach((channel) => {
+      channel.stop()
+      channel.resetGate()
     })
 
     this.playing = false
     this._stopPlayheadRaf()
   }
 
-  rescheduleTriggers(lanesData) {
+  rescheduleTriggers(boxesData) {
     if (!this.playing) return
-    this._scheduleTriggers(lanesData)
+    this._scheduleTriggers(boxesData)
   }
 
   onPlayhead(cb) {
@@ -289,8 +299,7 @@ class AudioEngine {
       if (!this.playing) return
       const transport = Tone.getTransport()
       const pos = transport.seconds % this.barLength
-      const normalized = pos / this.barLength
-      this._onPlayhead?.(normalized)
+      this._onPlayhead?.(pos / this.barLength)
       this._rafId = requestAnimationFrame(tick)
     }
     this._rafId = requestAnimationFrame(tick)
