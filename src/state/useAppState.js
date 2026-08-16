@@ -1,155 +1,210 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { engine } from '../audio/engine.js'
-
-const DEFAULT_LANE = () => ({
-  id: uuidv4(),
-  sourceType: 'noise',  // 'noise' | 'tone' | 'sample'
-  frequency: 220,       // Hz (tone pitch or noise bandpass center)
-  sampleUrl: null,
-  sampleBuffer: null,
-  volume: 0.8,
-  triggers: [],
-})
-
-const INITIAL_LANES = [
-  DEFAULT_LANE(),
-  DEFAULT_LANE(),
-  DEFAULT_LANE(),
-  DEFAULT_LANE(),
-]
+import { BOXES, LEVEL_DEF, defaultParams, defaultSwitches } from '../boxes/definitions.js'
 
 const VELOCITY_ORDER = ['high', 'med', 'low']
 
+// A starting pattern per box, so the thing makes sound the moment you hit play.
+// direction: -1 snappy … +1 swell.
+const SEED_TRIGGERS = {
+  arithmetic: [
+    { position: 0.0, direction: -0.7 },
+    { position: 0.25, direction: -0.9, velocity: 'med' },
+    { position: 0.5, direction: -0.7 },
+    { position: 0.75, direction: -0.9, velocity: 'low' },
+  ],
+  geometry: [
+    { position: 0.125, direction: 0.1 },
+    { position: 0.375, direction: -0.4, velocity: 'med' },
+    { position: 0.625, direction: 0.1 },
+    { position: 0.875, direction: -0.4, velocity: 'med' },
+  ],
+  music: [
+    { position: 0.0, direction: 0.85 },
+    { position: 0.5, direction: 0.6, velocity: 'med' },
+  ],
+  astronomy: [
+    { position: 0.06, direction: 1.0 },
+    { position: 0.66, direction: 0.9, velocity: 'med' },
+  ],
+}
+
+function initialBoxes() {
+  return BOXES.map((box) => ({
+    id: box.id,
+    params: defaultParams(box),
+    switches: defaultSwitches(box),
+    level: LEVEL_DEF.def,
+    muted: false,
+    sampleUrl: null,
+    sampleName: null,
+    triggers: (SEED_TRIGGERS[box.id] ?? []).map((t) => ({
+      id: uuidv4(),
+      velocity: 'high',
+      ...t,
+    })),
+  }))
+}
+
 export function useAppState() {
   const [bpm, setBpmState] = useState(120)
+  const [masterVolume, setMasterVolumeState] = useState(0.8)
   const [playing, setPlaying] = useState(false)
   const [playheadPosition, setPlayheadPosition] = useState(0)
-  const [lanes, setLanes] = useState(INITIAL_LANES)
+  const [boxes, setBoxes] = useState(initialBoxes)
+  const initialized = useRef(false)
+  const boxesRef = useRef(boxes)
+  boxesRef.current = boxes
 
-  // Register lanes with engine on init
-  useState(() => {
-    INITIAL_LANES.forEach(l => engine.addLane(l.id))
-    engine.onPlayhead(pos => setPlayheadPosition(pos))
-  })
+  if (!initialized.current) {
+    initialized.current = true
+    BOXES.forEach((b) => engine.addBox(b.id))
+  }
+
+  useEffect(() => {
+    engine.onPlayhead((pos) => setPlayheadPosition(pos))
+  }, [])
+
+  // Push every control snapshot to the engine whenever a box changes. Voices
+  // apply values as short ramps, so this stays smooth under a knob drag.
+  useEffect(() => {
+    boxes.forEach((b) => engine.setBoxControls(b.id, b.params, b.switches))
+  }, [boxes])
 
   const setBpm = useCallback((val) => {
     setBpmState(val)
     engine.setBpm(val)
   }, [])
 
-  const togglePlay = useCallback(async (currentLanes) => {
+  const setMasterVolume = useCallback((val) => {
+    setMasterVolumeState(val)
+    engine.setMasterVolume(val)
+  }, [])
+
+  const togglePlay = useCallback(async (currentBoxes) => {
     if (playing) {
       engine.stop()
       setPlaying(false)
       setPlayheadPosition(0)
     } else {
-      await engine.start(currentLanes)
+      await engine.start(currentBoxes)
       setPlaying(true)
     }
   }, [playing])
 
-  // Lane mutations
-  const updateLaneSample = useCallback((laneId, buffer, url) => {
-    setLanes(prev => prev.map(l => {
-      if (l.id !== laneId) return l
-      return { ...l, sourceType: 'sample', sampleUrl: url, sampleBuffer: buffer }
+  const patchBox = useCallback((boxId, updater) => {
+    setBoxes((prev) => prev.map((b) => (b.id === boxId ? updater(b) : b)))
+  }, [])
+
+  // ── Box controls ───────────────────────────────────────────────────────────
+
+  const setParam = useCallback((boxId, key, value) => {
+    patchBox(boxId, (b) => ({ ...b, params: { ...b.params, [key]: value } }))
+  }, [patchBox])
+
+  const setSwitch = useCallback((boxId, key, value) => {
+    patchBox(boxId, (b) => ({ ...b, switches: { ...b.switches, [key]: value } }))
+  }, [patchBox])
+
+  const setLevel = useCallback((boxId, value) => {
+    patchBox(boxId, (b) => ({ ...b, level: value }))
+    engine.setBoxLevel(boxId, value)
+  }, [patchBox])
+
+  const toggleMuted = useCallback((boxId) => {
+    setBoxes((prev) => prev.map((b) => {
+      if (b.id !== boxId) return b
+      const muted = !b.muted
+      engine.setBoxMuted(boxId, muted)
+      return { ...b, muted }
     }))
-    engine.setLaneBuffer(laneId, buffer)
   }, [])
 
-  const updateLaneSourceType = useCallback((laneId, type) => {
-    setLanes(prev => prev.map(l =>
-      l.id === laneId ? { ...l, sourceType: type } : l
-    ))
-    engine.setLaneSourceType(laneId, type)
-  }, [])
+  const setSample = useCallback((boxId, buffer, url, name) => {
+    patchBox(boxId, (b) => ({ ...b, sampleUrl: url, sampleName: name }))
+    engine.setBoxBuffer(boxId, buffer)
+  }, [patchBox])
 
-  const updateLaneFrequency = useCallback((laneId, hz) => {
-    setLanes(prev => prev.map(l =>
-      l.id === laneId ? { ...l, frequency: hz } : l
-    ))
-    engine.setLaneFrequency(laneId, hz)
-  }, [])
+  const clearSample = useCallback((boxId) => {
+    patchBox(boxId, (b) => {
+      if (b.sampleUrl) URL.revokeObjectURL(b.sampleUrl)
+      return { ...b, sampleUrl: null, sampleName: null }
+    })
+    engine.clearBoxBuffer(boxId)
+  }, [patchBox])
 
-  const updateLaneVolume = useCallback((laneId, vol) => {
-    setLanes(prev => prev.map(l =>
-      l.id === laneId ? { ...l, volume: vol } : l
-    ))
-    engine.setLaneVolume(laneId, vol)
-  }, [])
+  // Rescheduling tears down and rebuilds every transport event, so key it on
+  // the triggers alone — a knob drag must not churn the schedule 60x a second.
+  const triggerKey = useMemo(
+    () =>
+      boxes
+        .map((b) =>
+          b.triggers
+            .map((t) => `${t.position.toFixed(5)}|${t.direction.toFixed(4)}|${t.velocity}`)
+            .join(',')
+        )
+        .join(';'),
+    [boxes]
+  )
 
-  // Sync engine scheduling whenever lanes change while playing
   useEffect(() => {
-    engine.rescheduleTriggers(lanes)
-  }, [lanes])
+    engine.rescheduleTriggers(boxesRef.current)
+  }, [triggerKey])
 
-  // Trigger mutations
-  const addTrigger = useCallback((laneId, position) => {
-    const newTrigger = {
-      id: uuidv4(),
-      position,
-      direction: 0,
-      velocity: 'high',
-    }
-    setLanes(prev => prev.map(l =>
-      l.id === laneId
-        ? { ...l, triggers: [...l.triggers, newTrigger] }
-        : l
-    ))
+  // ── Trigger mutations ──────────────────────────────────────────────────────
+
+  const addTrigger = useCallback((boxId, position) => {
+    const newTrigger = { id: uuidv4(), position, direction: 0, velocity: 'high' }
+    patchBox(boxId, (b) => ({ ...b, triggers: [...b.triggers, newTrigger] }))
     return newTrigger.id
-  }, [])
+  }, [patchBox])
 
-  const updateTrigger = useCallback((laneId, triggerId, updates) => {
-    setLanes(prev => prev.map(l =>
-      l.id === laneId
-        ? {
-            ...l,
-            triggers: l.triggers.map(t =>
-              t.id === triggerId ? { ...t, ...updates } : t
-            ),
-          }
-        : l
-    ))
-  }, [])
-
-  const cycleVelocity = useCallback((laneId, triggerId) => {
-    setLanes(prev => prev.map(l => {
-      if (l.id !== laneId) return l
-      return {
-        ...l,
-        triggers: l.triggers.map(t => {
-          if (t.id !== triggerId) return t
-          const idx = VELOCITY_ORDER.indexOf(t.velocity ?? 'high')
-          const next = VELOCITY_ORDER[(idx + 1) % VELOCITY_ORDER.length]
-          return { ...t, velocity: next }
-        }),
-      }
+  const updateTrigger = useCallback((boxId, triggerId, updates) => {
+    patchBox(boxId, (b) => ({
+      ...b,
+      triggers: b.triggers.map((t) => (t.id === triggerId ? { ...t, ...updates } : t)),
     }))
-  }, [])
+  }, [patchBox])
 
-  const deleteTrigger = useCallback((laneId, triggerId) => {
-    setLanes(prev => prev.map(l =>
-      l.id === laneId
-        ? { ...l, triggers: l.triggers.filter(t => t.id !== triggerId) }
-        : l
-    ))
-  }, [])
+  const cycleVelocity = useCallback((boxId, triggerId) => {
+    patchBox(boxId, (b) => ({
+      ...b,
+      triggers: b.triggers.map((t) => {
+        if (t.id !== triggerId) return t
+        const idx = VELOCITY_ORDER.indexOf(t.velocity ?? 'high')
+        return { ...t, velocity: VELOCITY_ORDER[(idx + 1) % VELOCITY_ORDER.length] }
+      }),
+    }))
+  }, [patchBox])
+
+  const deleteTrigger = useCallback((boxId, triggerId) => {
+    patchBox(boxId, (b) => ({ ...b, triggers: b.triggers.filter((t) => t.id !== triggerId) }))
+  }, [patchBox])
+
+  const clearTriggers = useCallback((boxId) => {
+    patchBox(boxId, (b) => ({ ...b, triggers: [] }))
+  }, [patchBox])
 
   return {
     bpm,
     setBpm,
+    masterVolume,
+    setMasterVolume,
     playing,
     togglePlay,
     playheadPosition,
-    lanes,
-    updateLaneSample,
-    updateLaneSourceType,
-    updateLaneFrequency,
-    updateLaneVolume,
+    boxes,
+    setParam,
+    setSwitch,
+    setLevel,
+    toggleMuted,
+    setSample,
+    clearSample,
     addTrigger,
     updateTrigger,
     cycleVelocity,
     deleteTrigger,
+    clearTriggers,
   }
 }

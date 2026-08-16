@@ -1,4 +1,4 @@
-import { useRef, useCallback, useEffect, useState } from 'react'
+import { useRef, useCallback, useEffect, useMemo, useState } from 'react'
 
 const BAR_HEIGHT = 80
 const DRAG_THRESHOLD = 4
@@ -9,21 +9,43 @@ const VELOCITY_RADIUS = { high: 8, med: 5.5, low: 3.5 }
 // Velocity → touch hit bonus (smaller targets need bigger hit area)
 const VELOCITY_HIT = { high: 4, med: 6, low: 8 }
 
-function triggerColor(direction) {
-  // Swell (-1) violet → Ping (+1) pale luminous
-  const t = (direction + 1) / 2
-  const r = Math.round(lerp(0x9a, 0xd9, t))
-  const g = Math.round(lerp(0x86, 0xf2, t))
-  const b = Math.round(lerp(0xe6, 0xff, t))
-  return `rgb(${r},${g},${b})`
-}
-
 function lerp(a, b, t) { return a + (b - a) * t }
 
-export function TriggerBar({ laneId, triggers, playheadPosition, onAdd, onUpdate, onDelete, onCycleVelocity }) {
+function parseHex(hex) {
+  const h = hex.replace('#', '')
+  return [
+    parseInt(h.slice(0, 2), 16),
+    parseInt(h.slice(2, 4), 16),
+    parseInt(h.slice(4, 6), 16),
+  ]
+}
+
+/** Swell (-1) sits on the box's accent, ping (+1) on its brighter tint. */
+function makeTriggerColor(accent, accent2) {
+  const from = parseHex(accent)
+  const to = parseHex(accent2)
+  return (direction) => {
+    const t = (direction + 1) / 2
+    const c = from.map((v, i) => Math.round(lerp(v, to[i], t)))
+    return `rgb(${c[0]},${c[1]},${c[2]})`
+  }
+}
+
+export function TriggerBar({
+  laneId,
+  triggers,
+  playheadPosition,
+  accent = '#9a86e6',
+  accent2 = '#d9f2ff',
+  onAdd,
+  onUpdate,
+  onDelete,
+  onCycleVelocity,
+}) {
   const svgRef = useRef(null)
   const [firedIds, setFiredIds] = useState(new Set())
   const prevPlayhead = useRef(playheadPosition)
+  const triggerColor = useMemo(() => makeTriggerColor(accent, accent2), [accent, accent2])
 
   useEffect(() => {
     const prev = prevPlayhead.current
@@ -242,13 +264,13 @@ export function TriggerBar({ laneId, triggers, playheadPosition, onAdd, onUpdate
       <defs>
         {/* Void surface — deep gradient with a faint central glow */}
         <linearGradient id={`void-${laneId}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#12111c" />
-          <stop offset="0.5" stopColor="#0d0c15" />
-          <stop offset="1" stopColor="#0a0a11" />
+          <stop offset="0" stopColor="#0f0e16" />
+          <stop offset="0.5" stopColor="#0b0a12" />
+          <stop offset="1" stopColor="#08070e" />
         </linearGradient>
         <radialGradient id={`halo-${laneId}`} cx="50%" cy="50%" r="70%">
-          <stop offset="0" stopColor="rgba(124,92,255,0.10)" />
-          <stop offset="1" stopColor="rgba(124,92,255,0)" />
+          <stop offset="0" stopColor={accent} stopOpacity="0.10" />
+          <stop offset="1" stopColor={accent} stopOpacity="0" />
         </radialGradient>
       </defs>
 
@@ -257,17 +279,26 @@ export function TriggerBar({ laneId, triggers, playheadPosition, onAdd, onUpdate
       <rect width="100%" height={BAR_HEIGHT} fill={`url(#halo-${laneId})`} />
 
       {/* Center meridian */}
-      <line x1="0" y1={cy} x2="100%" y2={cy} stroke="rgba(185,163,255,0.16)" strokeWidth="1" strokeDasharray="2,6" />
+      <line
+        x1="0" y1={cy} x2="100%" y2={cy}
+        stroke={accent} strokeOpacity="0.18" strokeWidth="1" strokeDasharray="2,6"
+      />
 
-      {/* Grid lines at 25%, 50%, 75% */}
-      {[0.25, 0.5, 0.75].map(p => (
-        <line
-          key={p}
-          x1={`${p * 100}%`} y1="0"
-          x2={`${p * 100}%`} y2={BAR_HEIGHT}
-          stroke="rgba(185,163,255,0.10)" strokeWidth="0.5" strokeDasharray="2,5"
-        />
-      ))}
+      {/* Sixteenth-note grid, with the quarters picked out */}
+      {Array.from({ length: 15 }, (_, i) => (i + 1) / 16).map(p => {
+        const quarter = Math.abs((p * 4) % 1) < 1e-6
+        return (
+          <line
+            key={p}
+            x1={`${p * 100}%`} y1="0"
+            x2={`${p * 100}%`} y2={BAR_HEIGHT}
+            stroke={accent}
+            strokeOpacity={quarter ? 0.16 : 0.07}
+            strokeWidth={quarter ? 0.8 : 0.5}
+            strokeDasharray={quarter ? '3,5' : '2,6'}
+          />
+        )
+      })}
 
       {/* Triggers */}
       {triggers.map(t => {
@@ -318,10 +349,10 @@ export function TriggerBar({ laneId, triggers, playheadPosition, onAdd, onUpdate
       <line
         x1={playX} y1="0"
         x2={playX} y2={BAR_HEIGHT}
-        stroke="var(--accent)"
+        stroke={accent2}
         strokeWidth="1.5"
         opacity="0.9"
-        style={{ filter: 'drop-shadow(0 0 3px var(--accent))' }}
+        style={{ filter: `drop-shadow(0 0 3px ${accent})` }}
       />
     </svg>
   )
