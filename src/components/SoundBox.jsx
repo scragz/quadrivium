@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { memo, useCallback, useRef } from 'react'
 import { getContext } from 'tone'
 import { Knob } from './Knob.jsx'
 import { Switch } from './Switch.jsx'
@@ -9,10 +9,9 @@ import { formatVolume } from '../audio/levels.js'
 
 const levelDef = { ...LEVEL_DEF, format: formatVolume }
 
-export function SoundBox({
+function SoundBoxImpl({
   def,
   state,
-  playheadPosition,
   onParamChange,
   onSwitchChange,
   onLevelChange,
@@ -145,7 +144,6 @@ export function SoundBox({
       <TriggerBar
         laneId={def.id}
         triggers={state.triggers}
-        playheadPosition={playheadPosition}
         accent={theme.accent}
         accent2={theme.accent2}
         onAdd={onAddTrigger}
@@ -166,3 +164,8 @@ export function SoundBox({
     </article>
   )
 }
+
+// Memoised so a knob drag on one pedal only re-renders that pedal. Every
+// callback below comes from useAppState as a stable useCallback, and `state` is
+// only a new object for the box that actually changed.
+export const SoundBox = memo(SoundBoxImpl)

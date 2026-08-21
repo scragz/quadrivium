@@ -482,6 +482,57 @@ body {
   box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.6);
 }
 
+/* Trigger marks. Each <g> carries its own colour via `color`, so the flash
+   state is pure CSS — the playhead subscription only toggles `data-fired`. */
+.trigger-glow {
+  fill: currentColor;
+  opacity: 0;
+  transition: opacity 160ms ease-out;
+}
+
+.trigger-stem {
+  stroke: currentColor;
+  stroke-width: 1.5;
+  opacity: 0.8;
+}
+
+.trigger-dot {
+  fill: currentColor;
+  opacity: 0.92;
+  filter: drop-shadow(0 0 3px currentColor);
+}
+
+.trigger-core {
+  fill: rgba(255, 255, 255, 0.85);
+  opacity: 0.55;
+}
+
+.trigger[data-fired] .trigger-glow {
+  opacity: 0.3;
+  transition: none;
+}
+
+.trigger[data-fired] .trigger-stem {
+  stroke-width: 2;
+  opacity: 1;
+}
+
+.trigger[data-fired] .trigger-dot {
+  opacity: 1;
+  filter: drop-shadow(0 0 6px currentColor);
+}
+
+.trigger[data-fired] .trigger-core {
+  opacity: 0.9;
+}
+
+.trigger-playhead {
+  stroke: currentColor;
+  stroke-width: 1.5;
+  opacity: 0.9;
+}
+
+
 /* ── Footer ─────────────────────────────────────────────────────────────── */
 
 .app-footer {

@@ -75,6 +75,32 @@ BPM → bar length: `(60 / BPM) × 4 × 4` (16 beats per loop).
 | III| Music     | The Monochord | 4 oscillators at a just/equal ratio   | Chorus → reverb     |
 | IV| Astronomy  | The Orrery    | LFO-swept bandpassed noise            | Phaser → long reverb|
 
+## Keeping the audio thread fed
+
+Tone's transport callbacks run on the **main thread**, a `lookAhead` window
+(100 ms by default) before the audio time they schedule for. Anything that
+blocks the main thread for longer than that window makes `fireTrigger` run
+after its own `time`, and Web Audio answers a ramp scheduled in the past by
+jumping straight to the end value — the envelope collapses and you hear a chop.
+
+So: **nothing that runs every animation frame may go through React state.**
+The playhead used to, and re-rendering the whole rack 60 times a second kept
+the main thread busy ~70% of the time; triggers started landing late and the
+audio stuttered within a minute of pressing play. It now lives in
+`audio/playhead.js`, a plain subscribe/publish store — `TriggerBar` writes the
+line's `x` and the `data-fired` flash attribute straight to the DOM, and no
+React render is involved in playback at all.
+
+Two guards back that up: `fireTrigger` clamps its start to
+`Tone.getContext().currentTime`, so a late trigger is merely late instead of
+broken, and `SoundBox` is memoised, so a knob drag re-renders one pedal rather
+than four.
+
+Measured under a 10× CPU throttle, before → after: main thread blocked
+2.4–4.2 s out of every 5 s → effectively idle, and triggers arriving up to
+60 ms *after* their scheduled time → never later than their schedule, held
+steady across a three-minute run.
+
 ## Level calibration
 
 This is the part that will bite you if you skip it. Sources in Web Audio are

@@ -1,6 +1,7 @@
 import * as Tone from 'tone'
 import { createVoice } from './voices/index.js'
 import { volumeToGain } from './levels.js'
+import { publishPlayhead } from './playhead.js'
 
 // Derive trigger envelope params from direction (-1 snappy → 0 neutral/ping → +1 swell)
 // Neutral (direction=0) is an LPG-style ping: fast attack, short-ish decay.
@@ -123,20 +124,29 @@ class BoxChannel {
   fireTrigger(time, direction, velocity = 'high') {
     const { attack, decay, peak } = getTriggerShape(direction)
     const gainPeak = VELOCITY_GAIN[velocity] ?? 1.0
-    const release = time + attack + decay
+
+    // Transport callbacks run on the main thread, so a stall can hand us a time
+    // that has already passed. Ramping into the past makes Web Audio jump
+    // straight to the end value — the envelope collapses and you hear a chop.
+    // Clamp to the audio clock so a late trigger is merely late, not broken.
+    // In the healthy case `time` is still ahead of it and nothing shifts.
+    const start = Math.max(time, Tone.getContext().currentTime)
+    const release = start + attack + decay
 
     // cancelAndHoldAtTime retriggers from wherever the envelope currently is,
     // instead of the hard reset to zero that used to click on overlapping hits.
+    // Read the held value *at* the start time, not at whatever `now` happens to
+    // be a lookahead-window earlier.
     const freq = this.lpg.frequency
-    freq.cancelAndHoldAtTime(time)
-    freq.setValueAtTime(Math.max(freq.value, LPG_BASE), time)
-    freq.linearRampToValueAtTime(peak, time + attack)
+    freq.cancelAndHoldAtTime(start)
+    freq.setValueAtTime(Math.max(freq.getValueAtTime(start), LPG_BASE), start)
+    freq.linearRampToValueAtTime(peak, start + attack)
     freq.exponentialRampToValueAtTime(LPG_BASE, release)
 
     const g = this.gateGain.gain
-    g.cancelAndHoldAtTime(time)
-    g.setValueAtTime(Math.max(g.value, EPSILON), time)
-    g.linearRampToValueAtTime(gainPeak, time + attack)
+    g.cancelAndHoldAtTime(start)
+    g.setValueAtTime(Math.max(g.getValueAtTime(start), EPSILON), start)
+    g.linearRampToValueAtTime(gainPeak, start + attack)
     // Exponential decay reads as a natural fall; the short linear tail after it
     // is what actually reaches silence, since exponentials never do.
     g.exponentialRampToValueAtTime(EPSILON, release)
@@ -172,7 +182,6 @@ class AudioEngine {
     this.bpm = 120
     this.barLength = this._calcBarLength(120)
     this.playing = false
-    this._onPlayhead = null
     this._rafId = null
   }
 
@@ -255,6 +264,7 @@ class AudioEngine {
   }
 
   async start(boxesData) {
+    if (this.playing) return
     await Tone.start()
     const transport = Tone.getTransport()
 
@@ -290,27 +300,27 @@ class AudioEngine {
     this._scheduleTriggers(boxesData)
   }
 
-  onPlayhead(cb) {
-    this._onPlayhead = cb
-  }
-
   _startPlayheadRaf() {
+    if (this._rafId !== null) return
     const tick = () => {
-      if (!this.playing) return
+      if (!this.playing) {
+        this._rafId = null
+        return
+      }
       const transport = Tone.getTransport()
       const pos = transport.seconds % this.barLength
-      this._onPlayhead?.(pos / this.barLength)
+      publishPlayhead(pos / this.barLength)
       this._rafId = requestAnimationFrame(tick)
     }
     this._rafId = requestAnimationFrame(tick)
   }
 
   _stopPlayheadRaf() {
-    if (this._rafId) {
+    if (this._rafId !== null) {
       cancelAnimationFrame(this._rafId)
       this._rafId = null
     }
-    this._onPlayhead?.(0)
+    publishPlayhead(0, true)
   }
 }
 

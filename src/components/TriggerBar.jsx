@@ -1,4 +1,5 @@
-import { useRef, useCallback, useEffect, useMemo, useState } from 'react'
+import { useRef, useCallback, useEffect, useMemo } from 'react'
+import { subscribePlayhead } from '../audio/playhead.js'
 
 const BAR_HEIGHT = 80
 const DRAG_THRESHOLD = 4
@@ -34,7 +35,6 @@ function makeTriggerColor(accent, accent2) {
 export function TriggerBar({
   laneId,
   triggers,
-  playheadPosition,
   accent = '#9a86e6',
   accent2 = '#d9f2ff',
   onAdd,
@@ -43,31 +43,70 @@ export function TriggerBar({
   onCycleVelocity,
 }) {
   const svgRef = useRef(null)
-  const [firedIds, setFiredIds] = useState(new Set())
-  const prevPlayhead = useRef(playheadPosition)
+  const playheadRef = useRef(null)
   const triggerColor = useMemo(() => makeTriggerColor(accent, accent2), [accent, accent2])
 
-  useEffect(() => {
-    const prev = prevPlayhead.current
-    const curr = playheadPosition
+  // The playhead and the fire flash are written straight to the DOM. Feeding
+  // them through React state re-rendered the whole rack every animation frame,
+  // and since Tone's transport callbacks share the main thread, that backlog is
+  // what made triggers land late and the audio chop.
+  const triggersRef = useRef(triggers)
+  triggersRef.current = triggers
+  const prevPlayhead = useRef(0)
+  const flashTimers = useRef(new Map())
 
-    const fired = new Set()
-    triggers.forEach(t => {
-      if (prev <= curr) {
-        if (t.position >= prev && t.position < curr) fired.add(t.id)
-      } else {
-        if (t.position >= prev || t.position < curr) fired.add(t.id)
+  useEffect(() => {
+    const timers = flashTimers.current
+
+    const flash = (id) => {
+      const el = svgRef.current?.querySelector(`[data-id="${id}"]`)
+      if (!el) return
+      el.dataset.fired = '1'
+      clearTimeout(timers.get(id))
+      timers.set(id, setTimeout(() => {
+        timers.delete(id)
+        delete el.dataset.fired
+      }, 200))
+    }
+
+    const clearFlashes = () => {
+      timers.forEach((timer) => clearTimeout(timer))
+      timers.clear()
+      svgRef.current?.querySelectorAll('[data-fired]').forEach((el) => {
+        delete el.dataset.fired
+      })
+    }
+
+    const unsubscribe = subscribePlayhead((pos, reset) => {
+      const line = playheadRef.current
+      if (line) {
+        const x = `${pos * 100}%`
+        line.setAttribute('x1', x)
+        line.setAttribute('x2', x)
+      }
+
+      const prev = prevPlayhead.current
+      prevPlayhead.current = pos
+      if (reset) {
+        clearFlashes()
+        return
+      }
+
+      // Forward motion is prev→pos; a wrap past the loop point splits the span.
+      for (const t of triggersRef.current) {
+        const crossed = prev <= pos
+          ? t.position >= prev && t.position < pos
+          : t.position >= prev || t.position < pos
+        if (crossed) flash(t.id)
       }
     })
 
-    prevPlayhead.current = curr
-
-    if (fired.size > 0) {
-      setFiredIds(fired)
-      const timer = setTimeout(() => setFiredIds(new Set()), 200)
-      return () => clearTimeout(timer)
+    return () => {
+      unsubscribe()
+      timers.forEach((timer) => clearTimeout(timer))
+      timers.clear()
     }
-  }, [playheadPosition, triggers])
+  }, [])
 
   const getSvgX = useCallback((clientX) => {
     const rect = svgRef.current?.getBoundingClientRect()
@@ -248,7 +287,6 @@ export function TriggerBar({
   }, [getTriggerAt, getSvgX, laneId, onAdd, onUpdate, onDelete, onCycleVelocity])
 
   const cy = BAR_HEIGHT / 2
-  const playX = `${playheadPosition * 100}%`
 
   return (
     <svg
@@ -300,59 +338,39 @@ export function TriggerBar({
         )
       })}
 
-      {/* Triggers */}
+      {/* Triggers. The fire flash is a `data-fired` attribute set imperatively
+          from the playhead subscription, so styling it lives in CSS and React
+          never has to re-render the bar in time with the transport. */}
       {triggers.map(t => {
-        const color = triggerColor(t.direction)
+        const x = `${t.position * 100}%`
         const stemLen = Math.abs(t.direction) * STEM_MAX
         const stemY1 = t.direction > 0 ? cy - stemLen : cy
         const stemY2 = t.direction > 0 ? cy : cy + stemLen
-        const isFired = firedIds.has(t.id)
         const r = VELOCITY_RADIUS[t.velocity ?? 'high']
-        const glowR = isFired ? r + 6 : 0
 
         return (
-          <g key={t.id} data-id={t.id}>
-            {isFired && (
-              <circle
-                cx={`${t.position * 100}%`} cy={cy}
-                r={glowR}
-                fill={color}
-                opacity="0.3"
-              />
-            )}
+          <g
+            key={t.id}
+            data-id={t.id}
+            className="trigger"
+            style={{ color: triggerColor(t.direction) }}
+          >
+            <circle className="trigger-glow" cx={x} cy={cy} r={r + 6} />
             {stemLen > 0.5 && (
-              <line
-                x1={`${t.position * 100}%`} y1={stemY1}
-                x2={`${t.position * 100}%`} y2={stemY2}
-                stroke={color} strokeWidth={isFired ? 2 : 1.5}
-                opacity={isFired ? 1 : 0.8}
-              />
+              <line className="trigger-stem" x1={x} y1={stemY1} x2={x} y2={stemY2} />
             )}
-            <circle
-              cx={`${t.position * 100}%`} cy={cy}
-              r={r}
-              fill={color}
-              opacity={isFired ? 1 : 0.92}
-              style={{ filter: `drop-shadow(0 0 ${isFired ? 6 : 3}px ${color})` }}
-            />
-            <circle
-              cx={`${t.position * 100}%`} cy={cy}
-              r={Math.max(1, r - 2.5)}
-              fill="rgba(255,255,255,0.85)"
-              opacity={isFired ? 0.9 : 0.55}
-            />
+            <circle className="trigger-dot" cx={x} cy={cy} r={r} />
+            <circle className="trigger-core" cx={x} cy={cy} r={Math.max(1, r - 2.5)} />
           </g>
         )
       })}
 
-      {/* Playhead */}
+      {/* Playhead — x is written by the subscription above, never by React. */}
       <line
-        x1={playX} y1="0"
-        x2={playX} y2={BAR_HEIGHT}
-        stroke={accent2}
-        strokeWidth="1.5"
-        opacity="0.9"
-        style={{ filter: `drop-shadow(0 0 3px ${accent})` }}
+        ref={playheadRef}
+        className="trigger-playhead"
+        y1="0" y2={BAR_HEIGHT}
+        style={{ color: accent2, filter: `drop-shadow(0 0 3px ${accent})` }}
       />
     </svg>
   )
