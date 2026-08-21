@@ -51,7 +51,6 @@ export function useAppState() {
   const [bpm, setBpmState] = useState(120)
   const [masterVolume, setMasterVolumeState] = useState(0.8)
   const [playing, setPlaying] = useState(false)
-  const [playheadPosition, setPlayheadPosition] = useState(0)
   const [boxes, setBoxes] = useState(initialBoxes)
   const initialized = useRef(false)
   const boxesRef = useRef(boxes)
@@ -61,10 +60,6 @@ export function useAppState() {
     initialized.current = true
     BOXES.forEach((b) => engine.addBox(b.id))
   }
-
-  useEffect(() => {
-    engine.onPlayhead((pos) => setPlayheadPosition(pos))
-  }, [])
 
   // Push every control snapshot to the engine whenever a box changes. Voices
   // apply values as short ramps, so this stays smooth under a knob drag.
@@ -86,7 +81,6 @@ export function useAppState() {
     if (playing) {
       engine.stop()
       setPlaying(false)
-      setPlayheadPosition(0)
     } else {
       await engine.start(currentBoxes)
       setPlaying(true)
@@ -193,7 +187,6 @@ export function useAppState() {
     setMasterVolume,
     playing,
     togglePlay,
-    playheadPosition,
     boxes,
     setParam,
     setSwitch,

@@ -35,7 +35,6 @@ export default function App() {
     setMasterVolume,
     playing,
     togglePlay,
-    playheadPosition,
     boxes,
     setParam,
     setSwitch,
@@ -88,7 +87,6 @@ export default function App() {
               key={def.id}
               def={def}
               state={state}
-              playheadPosition={playheadPosition}
               onParamChange={setParam}
               onSwitchChange={setSwitch}
               onLevelChange={setLevel}
