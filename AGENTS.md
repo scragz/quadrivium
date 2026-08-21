@@ -30,6 +30,7 @@ src/
     TriggerBar.jsx      # SVG sequencer: click to place, drag to shape, right-click delete
   state/
     useAppState.js      # All app state + callbacks
+    persistence.js      # localStorage mirror: save debounced, load validated
   audio/
     engine.js           # AudioEngine + BoxChannel (gate, LPG, limiter, level)
     levels.js           # Gain staging: source normalization, volume taper
@@ -96,6 +97,22 @@ Two guards back that up: `fireTrigger` clamps its start to
 broken, and `SoundBox` is memoised, so a knob drag re-renders one pedal rather
 than four.
 
+Dragging a trigger mark obeys the same rule, and for a second reason. It used
+to call `updateTrigger` on every mousemove, and each of those commits ran
+`engine.rescheduleTriggers`, which tears down and rebuilds *every* transport
+event in the rack — measured at 113 rebuilds and 1356 scheduled events across a
+single two-second drag. So a drag now writes the mark's geometry straight to
+the DOM (`grabMark` in `TriggerBar`, the same trick as the playhead) and calls
+`engine.updateScheduledTrigger` for the sound, which moves that one event and
+leaves the other eleven alone — direction and velocity move nothing at all,
+since the scheduled callback reads them off a mutable record at fire time.
+React hears about the drag once, on release. The attributes written by hand are
+the ones React writes, so that commit lands on the values already on screen and
+nothing has to be undone.
+
+Same drag, before → after: 113 reschedules → 1, 1356 transport events → 125,
+and 1.90 s of scripting → 0.32 s (Chromium, 4× CPU throttle).
+
 Measured under a 10× CPU throttle, before → after: main thread blocked
 2.4–4.2 s out of every 5 s → effectively idle, and triggers arriving up to
 60 ms *after* their scheduled time → never later than their schedule, held
@@ -150,6 +167,54 @@ Measured with a main thread blocked 950 ms out of every second (what a
 throttled clock looks like to the scheduler): 14 of 15 triggers past due →
 after, 16 of 16 dispatched ahead of the audio clock, and a suspend-while-hidden
 now comes back to a full 12-triggers-per-loop pattern instead of silence.
+
+## Remembering a session
+
+The patch is mirrored into localStorage under `quadrivium.state.v1` and read
+back on load: tempo, master, and per box its knobs, switches, level, bypass and
+trigger pattern. `state/persistence.js` owns both halves.
+
+Two things deliberately don't come back:
+
+- **Samples.** A loaded sample is a decoded AudioBuffer behind a `blob:` URL,
+  and both die with the document. A restored box is back on its own voice.
+- **Playing.** An AudioContext only starts from a user gesture, so a restored
+  session always comes up stopped with its patch intact.
+
+Saves are kept off the frame twice over. A knob or trigger drag changes state
+once per animation frame, and anything on the main thread competes with the
+transport's lookahead window — see "Keeping the audio thread fed". So the save
+timer **restarts on every change** (1.5 s), meaning an unbroken drag writes
+nothing at all until you let go, and the write then waits for
+`requestIdleCallback` rather than landing in whatever the page is doing. A
+playing page never really goes idle, so that wait is capped at 2 s.
+
+Measured across a 6-second trigger drag: 13 writes before, 0 after.
+
+That leaves a trailing debounce with no periodic save behind it, so the flush is
+what guarantees a save at all — a pending write goes down on `pagehide` and on
+the tab going hidden, since a discarded tab may never run another timer, and
+leaving mid-drag banks a patch that was never idle long enough to write.
+
+Everything read back is **re-validated against `boxes/definitions.js`** rather
+than trusted — numbers clamped to their param's range, switch values checked
+against that switch's options, junk triggers dropped. A hand-edited or
+half-migrated blob otherwise reaches the audio graph as a NaN, and a NaN in a
+Web Audio param throws where it lands rather than where it came from. Anything
+unusable (bad JSON, an unknown `version`, no storage at all) falls back to the
+seed pattern. A box with *no* stored entry seeds; a box with an empty stored
+pattern stays empty — clearing a lane is a decision, not an absence.
+
+localStorage itself is optional: a private window or blocked site data makes
+ordinary calls throw, so every access is guarded and the first failure turns
+persistence into a no-op rather than taking the app down.
+
+Restoring is a startup step, not a live sync — a second tab keeps its own patch
+until whichever one saves last. To start clean, `window.__quadrivium.resetState()`
+in a dev build (then reload), or clear the site's storage.
+
+Bumping `SCHEMA_VERSION` discards every stored patch, so reach for it only when
+a shape change can't be absorbed by the validators.
 
 ## Level calibration
 

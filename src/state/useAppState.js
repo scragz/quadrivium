@@ -1,7 +1,8 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { engine } from '../audio/engine.js'
-import { BOXES, LEVEL_DEF, defaultParams, defaultSwitches } from '../boxes/definitions.js'
+import { BOXES, BPM_DEF, MASTER_DEF, LEVEL_DEF, defaultParams, defaultSwitches } from '../boxes/definitions.js'
+import { loadState, persistState, flushPersistedState } from './persistence.js'
 
 const VELOCITY_ORDER = ['high', 'med', 'low']
 
@@ -30,26 +31,51 @@ const SEED_TRIGGERS = {
   ],
 }
 
-function initialBoxes() {
-  return BOXES.map((box) => ({
-    id: box.id,
-    params: defaultParams(box),
-    switches: defaultSwitches(box),
-    level: LEVEL_DEF.def,
-    muted: false,
-    sampleUrl: null,
-    sampleName: null,
-    triggers: (SEED_TRIGGERS[box.id] ?? []).map((t) => ({
-      id: uuidv4(),
-      velocity: 'high',
-      ...t,
-    })),
+// The stored patch, read once per page load. Restoring is a startup step, not
+// a live sync: nothing here watches storage afterwards, so a second tab is
+// free to hold its own patch until whichever one saves last.
+let restored
+function restoredState() {
+  if (restored === undefined) restored = loadState(uuidv4)
+  return restored
+}
+
+function seedTriggers(boxId) {
+  return (SEED_TRIGGERS[boxId] ?? []).map((t) => ({
+    id: uuidv4(),
+    velocity: 'high',
+    ...t,
   }))
 }
 
+function initialBoxes() {
+  const saved = restoredState()?.boxes
+  return BOXES.map((box) => {
+    const s = saved?.[box.id]
+    return {
+      id: box.id,
+      params: s?.params ?? defaultParams(box),
+      switches: s?.switches ?? defaultSwitches(box),
+      level: s?.level ?? LEVEL_DEF.def,
+      muted: s?.muted ?? false,
+      // A sample is a decoded buffer behind a blob: URL — neither survives the
+      // document, so a restored box comes back on its own voice.
+      sampleUrl: null,
+      sampleName: null,
+      // An empty saved pattern is a pattern: only a box with nothing stored
+      // at all gets the seed.
+      triggers: s?.triggers ?? seedTriggers(box.id),
+    }
+  })
+}
+
 export function useAppState() {
-  const [bpm, setBpmState] = useState(120)
-  const [masterVolume, setMasterVolumeState] = useState(0.8)
+  const [bpm, setBpmState] = useState(() => restoredState()?.bpm ?? BPM_DEF.def)
+  const [masterVolume, setMasterVolumeState] = useState(
+    () => restoredState()?.masterVolume ?? MASTER_DEF.def
+  )
+  // Never restored: an AudioContext only starts from a user gesture, so a
+  // reloaded session comes up stopped with its patch intact.
   const [playing, setPlaying] = useState(false)
   const [boxes, setBoxes] = useState(initialBoxes)
   const initialized = useRef(false)
@@ -59,7 +85,39 @@ export function useAppState() {
   if (!initialized.current) {
     initialized.current = true
     BOXES.forEach((b) => engine.addBox(b.id))
+    // Params and switches reach the engine through the effect below on the
+    // first render, but tempo, master, level and mute only move on a user
+    // action — so a restored value for those has to be pushed once, here.
+    engine.setBpm(bpm)
+    engine.setMasterVolume(masterVolume)
+    boxes.forEach((b) => {
+      engine.setBoxLevel(b.id, b.level)
+      if (b.muted) engine.setBoxMuted(b.id, true)
+    })
   }
+
+  // Mirror the patch into localStorage. persistState debounces the write, so a
+  // knob drag doesn't serialize the whole rack on every frame.
+  useEffect(() => {
+    persistState({ bpm, masterVolume, boxes })
+  }, [bpm, masterVolume, boxes])
+
+  // A tab can be discarded without ever running another timer, so bank the
+  // pending write the moment it goes away. pagehide covers the bfcache and
+  // mobile; visibilitychange covers a tab switch that never comes back.
+  useEffect(() => {
+    const flush = () => flushPersistedState()
+    const onHidden = () => {
+      if (document.visibilityState === 'hidden') flush()
+    }
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', onHidden)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', onHidden)
+      flush()
+    }
+  }, [])
 
   // Push every control snapshot to the engine whenever a box changes. Voices
   // apply values as short ramps, so this stays smooth under a knob drag.
@@ -154,6 +212,17 @@ export function useAppState() {
     return newTrigger.id
   }, [patchBox])
 
+  /**
+   * The live edit under a drag: straight to the engine, never through state.
+   *
+   * A committed `updateTrigger` rebuilds the whole schedule, which is right
+   * once per edit and ruinous once per animation frame. TriggerBar calls this
+   * on every move and commits once on release.
+   */
+  const liveUpdateTrigger = useCallback((boxId, triggerId, updates) => {
+    engine.updateScheduledTrigger(boxId, triggerId, updates)
+  }, [])
+
   const updateTrigger = useCallback((boxId, triggerId, updates) => {
     patchBox(boxId, (b) => ({
       ...b,
@@ -196,6 +265,7 @@ export function useAppState() {
     clearSample,
     addTrigger,
     updateTrigger,
+    liveUpdateTrigger,
     cycleVelocity,
     deleteTrigger,
     clearTriggers,

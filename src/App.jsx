@@ -2,30 +2,11 @@ import { useCallback, useRef } from 'react'
 import { Knob } from './components/Knob.jsx'
 import { SoundBox } from './components/SoundBox.jsx'
 import { useAppState } from './state/useAppState.js'
-import { BOXES } from './boxes/definitions.js'
+import { BOXES, BPM_DEF, MASTER_DEF } from './boxes/definitions.js'
 import { formatVolume } from './audio/levels.js'
 
-const BPM_DEF = {
-  key: 'bpm',
-  label: 'TEMPO',
-  min: 40,
-  max: 260,
-  def: 120,
-  curve: 'lin',
-  step: 1,
-  format: (v) => `${Math.round(v)}`,
-}
-
-const MASTER_DEF = {
-  key: 'master',
-  label: 'MASTER',
-  min: 0,
-  max: 1,
-  def: 0.8,
-  curve: 'lin',
-  unit: 'dB',
-  format: formatVolume,
-}
+const bpmDef = { ...BPM_DEF, format: (v) => `${Math.round(v)}` }
+const masterDef = { ...MASTER_DEF, format: formatVolume }
 
 export default function App() {
   const {
@@ -44,6 +25,7 @@ export default function App() {
     clearSample,
     addTrigger,
     updateTrigger,
+    liveUpdateTrigger,
     cycleVelocity,
     deleteTrigger,
     clearTriggers,
@@ -65,8 +47,8 @@ export default function App() {
         </div>
 
         <div className="transport">
-          <Knob def={BPM_DEF} value={bpm} onChange={setBpm} size={36} />
-          <Knob def={MASTER_DEF} value={masterVolume} onChange={setMasterVolume} size={36} />
+          <Knob def={bpmDef} value={bpm} onChange={setBpm} size={36} />
+          <Knob def={masterDef} value={masterVolume} onChange={setMasterVolume} size={36} />
           <button
             type="button"
             className={`play ${playing ? 'on' : ''}`}
@@ -95,6 +77,7 @@ export default function App() {
               onClearSample={clearSample}
               onAddTrigger={addTrigger}
               onUpdateTrigger={updateTrigger}
+              onLiveUpdateTrigger={liveUpdateTrigger}
               onDeleteTrigger={deleteTrigger}
               onCycleVelocity={cycleVelocity}
               onClearTriggers={clearTriggers}
