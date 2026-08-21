@@ -97,6 +97,22 @@ Two guards back that up: `fireTrigger` clamps its start to
 broken, and `SoundBox` is memoised, so a knob drag re-renders one pedal rather
 than four.
 
+Dragging a trigger mark obeys the same rule, and for a second reason. It used
+to call `updateTrigger` on every mousemove, and each of those commits ran
+`engine.rescheduleTriggers`, which tears down and rebuilds *every* transport
+event in the rack — measured at 113 rebuilds and 1356 scheduled events across a
+single two-second drag. So a drag now writes the mark's geometry straight to
+the DOM (`grabMark` in `TriggerBar`, the same trick as the playhead) and calls
+`engine.updateScheduledTrigger` for the sound, which moves that one event and
+leaves the other eleven alone — direction and velocity move nothing at all,
+since the scheduled callback reads them off a mutable record at fire time.
+React hears about the drag once, on release. The attributes written by hand are
+the ones React writes, so that commit lands on the values already on screen and
+nothing has to be undone.
+
+Same drag, before → after: 113 reschedules → 1, 1356 transport events → 125,
+and 1.90 s of scripting → 0.32 s (Chromium, 4× CPU throttle).
+
 Measured under a 10× CPU throttle, before → after: main thread blocked
 2.4–4.2 s out of every 5 s → effectively idle, and triggers arriving up to
 60 ms *after* their scheduled time → never later than their schedule, held

@@ -25,6 +25,7 @@ export default function App() {
     clearSample,
     addTrigger,
     updateTrigger,
+    liveUpdateTrigger,
     cycleVelocity,
     deleteTrigger,
     clearTriggers,
@@ -76,6 +77,7 @@ export default function App() {
               onClearSample={clearSample}
               onAddTrigger={addTrigger}
               onUpdateTrigger={updateTrigger}
+              onLiveUpdateTrigger={liveUpdateTrigger}
               onDeleteTrigger={deleteTrigger}
               onCycleVelocity={cycleVelocity}
               onClearTriggers={clearTriggers}

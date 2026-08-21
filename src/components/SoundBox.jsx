@@ -20,6 +20,7 @@ function SoundBoxImpl({
   onClearSample,
   onAddTrigger,
   onUpdateTrigger,
+  onLiveUpdateTrigger,
   onDeleteTrigger,
   onCycleVelocity,
   onClearTriggers,
@@ -148,6 +149,7 @@ function SoundBoxImpl({
         accent2={theme.accent2}
         onAdd={onAddTrigger}
         onUpdate={onUpdateTrigger}
+        onLiveUpdate={onLiveUpdateTrigger}
         onDelete={onDeleteTrigger}
         onCycleVelocity={onCycleVelocity}
       />

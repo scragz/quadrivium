@@ -212,6 +212,17 @@ export function useAppState() {
     return newTrigger.id
   }, [patchBox])
 
+  /**
+   * The live edit under a drag: straight to the engine, never through state.
+   *
+   * A committed `updateTrigger` rebuilds the whole schedule, which is right
+   * once per edit and ruinous once per animation frame. TriggerBar calls this
+   * on every move and commits once on release.
+   */
+  const liveUpdateTrigger = useCallback((boxId, triggerId, updates) => {
+    engine.updateScheduledTrigger(boxId, triggerId, updates)
+  }, [])
+
   const updateTrigger = useCallback((boxId, triggerId, updates) => {
     patchBox(boxId, (b) => ({
       ...b,
@@ -254,6 +265,7 @@ export function useAppState() {
     clearSample,
     addTrigger,
     updateTrigger,
+    liveUpdateTrigger,
     cycleVelocity,
     deleteTrigger,
     clearTriggers,

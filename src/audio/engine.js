@@ -235,7 +235,9 @@ class AudioEngine {
     this.masterLimiter.toDestination()
 
     this.channels = new Map() // boxId → BoxChannel
-    this.scheduledEvents = []
+    // `${boxId}:${triggerId}` → { id, trigger }. The trigger record is mutable
+    // and read at fire time, so a drag can reshape it in place.
+    this.scheduledEvents = new Map()
     this._boxesData = []
     this.bpm = 120
     this.barLength = this._calcBarLength(120)
@@ -298,36 +300,65 @@ class AudioEngine {
     this._clearScheduled()
     this._boxesData = boxesData
 
-    const transport = Tone.getTransport()
-
     boxesData.forEach((box) => {
       const channel = this.channels.get(box.id)
       if (!channel) return
-
-      box.triggers.forEach((trigger) => {
-        const triggerTime = trigger.position * this.barLength
-        const eventId = transport.schedule((time) => {
-          // Tone dispatches every tick due in one pass and aborts the whole
-          // pass on a throw, so an unhappy box would silence the other three
-          // for that window. Contain it here.
-          try {
-            channel.fireTrigger(time, trigger.direction, trigger.velocity ?? 'high')
-          } catch (err) {
-            console.error(`[quadrivium] trigger failed on ${box.id}`, err)
-            channel.panicGate()
-          }
-        }, triggerTime)
-        this.scheduledEvents.push(eventId)
-      })
+      // A copy, because the record is mutated in place by a drag and the one
+      // React holds is meant to be immutable.
+      box.triggers.forEach((trigger) => this._scheduleOne(box.id, channel, { ...trigger }))
     })
+  }
+
+  _scheduleOne(boxId, channel, trigger) {
+    const eventId = Tone.getTransport().schedule((time) => {
+      // Tone dispatches every tick due in one pass and aborts the whole
+      // pass on a throw, so an unhappy box would silence the other three
+      // for that window. Contain it here.
+      try {
+        // Read off `trigger` at fire time, not at schedule time: that is what
+        // lets a drag reshape the envelope without rebuilding the schedule.
+        channel.fireTrigger(time, trigger.direction, trigger.velocity ?? 'high')
+      } catch (err) {
+        console.error(`[quadrivium] trigger failed on ${boxId}`, err)
+        channel.panicGate()
+      }
+    }, trigger.position * this.barLength)
+    this.scheduledEvents.set(`${boxId}:${trigger.id}`, { id: eventId, trigger })
+  }
+
+  /**
+   * Edit one trigger that is being dragged, without touching the other eleven.
+   *
+   * `rescheduleTriggers` tears the whole timeline down and rebuilds it, which
+   * is the right thing once per edit but ruinous once per animation frame —
+   * measured at 1356 transport events rebuilt across a single two-second drag.
+   * Direction and velocity need no rescheduling at all, since the callback
+   * reads them at fire time; only a change of position moves the event, and
+   * then just that one.
+   */
+  updateScheduledTrigger(boxId, triggerId, updates) {
+    if (!this.playing) return
+    const key = `${boxId}:${triggerId}`
+    const entry = this.scheduledEvents.get(key)
+    if (!entry) return
+
+    const moved = updates.position !== undefined && updates.position !== entry.trigger.position
+    Object.assign(entry.trigger, updates)
+    if (!moved) return
+
+    const channel = this.channels.get(boxId)
+    if (!channel) return
+    try { Tone.getTransport().clear(entry.id) } catch (_) {}
+    this.scheduledEvents.delete(key)
+    this._scheduleOne(boxId, channel, entry.trigger)
   }
 
   _clearScheduled() {
     const transport = Tone.getTransport()
-    this.scheduledEvents.forEach((id) => {
+    this.scheduledEvents.forEach(({ id }) => {
       try { transport.clear(id) } catch (_) {}
     })
-    this.scheduledEvents = []
+    this.scheduledEvents.clear()
   }
 
   async start(boxesData) {

@@ -2,6 +2,7 @@ import { useRef, useCallback, useEffect, useMemo } from 'react'
 import { subscribePlayhead } from '../audio/playhead.js'
 
 const BAR_HEIGHT = 80
+const CY = BAR_HEIGHT / 2
 const DRAG_THRESHOLD = 4
 const STEM_MAX = 30
 
@@ -39,6 +40,7 @@ export function TriggerBar({
   accent2 = '#d9f2ff',
   onAdd,
   onUpdate,
+  onLiveUpdate,
   onDelete,
   onCycleVelocity,
 }) {
@@ -108,6 +110,72 @@ export function TriggerBar({
     }
   }, [])
 
+  /**
+   * A handle that moves one trigger mark by writing its geometry, exactly as
+   * React would, straight to the DOM.
+   *
+   * Dragging used to go through React state on every mousemove, which
+   * re-rendered the pedal and — far worse — rebuilt every scheduled transport
+   * event in the rack, sixty times a second. Same reasoning as the playhead
+   * above: what moves per frame doesn't go through React. The attributes
+   * written here are the ones React writes, so the commit on mouse-up lands on
+   * the values already on screen and nothing has to be undone.
+   */
+  const grabMark = useCallback((triggerId) => {
+    const g = svgRef.current?.querySelector(`[data-id="${triggerId}"]`)
+    if (!g) return null
+    const glow = g.querySelector('.trigger-glow')
+    const dot = g.querySelector('.trigger-dot')
+    const core = g.querySelector('.trigger-core')
+    const stem = g.querySelector('.trigger-stem')
+    if (!glow || !dot || !core || !stem) return null
+
+    return {
+      position(pos) {
+        const x = `${pos * 100}%`
+        glow.setAttribute('cx', x)
+        dot.setAttribute('cx', x)
+        core.setAttribute('cx', x)
+        stem.setAttribute('x1', x)
+        stem.setAttribute('x2', x)
+      },
+      direction(dir) {
+        const len = Math.abs(dir) * STEM_MAX
+        stem.setAttribute('y1', dir > 0 ? CY - len : CY)
+        stem.setAttribute('y2', dir > 0 ? CY : CY + len)
+        g.style.color = triggerColor(dir)
+      },
+    }
+  }, [triggerColor])
+
+  /**
+   * One drag, from press to release: the mark's geometry goes to the DOM and
+   * the change goes to the engine on every move; React hears about it once, at
+   * the end. `onLiveUpdate` moves just this trigger's transport event, so the
+   * sound follows the mark without the schedule being rebuilt each frame.
+   */
+  const startDrag = useCallback((triggerId) => {
+    let mark = null
+    const edits = {}
+
+    return {
+      apply(updates) {
+        // A mark that was only just added appears a render later, so keep
+        // trying until it's there.
+        if (!mark) mark = grabMark(triggerId)
+        Object.assign(edits, updates)
+        if (mark) {
+          if (updates.position !== undefined) mark.position(updates.position)
+          if (updates.direction !== undefined) mark.direction(updates.direction)
+        }
+        onLiveUpdate?.(laneId, triggerId, updates)
+      },
+      commit() {
+        if (Object.keys(edits).length > 0) onUpdate(laneId, triggerId, edits)
+      },
+    }
+  }, [grabMark, laneId, onLiveUpdate, onUpdate])
+
   const getSvgX = useCallback((clientX) => {
     const rect = svgRef.current?.getBoundingClientRect()
     if (!rect) return 0
@@ -142,15 +210,16 @@ export function TriggerBar({
       const pos = Math.max(0, Math.min(1, getSvgX(e.clientX)))
       const newId = onAdd(laneId, pos)
 
+      const drag = startDrag(newId)
       const startY = e.clientY
       const onMove = (me) => {
         const dy = startY - me.clientY
-        const direction = Math.max(-1, Math.min(1, dy / STEM_MAX))
-        onUpdate(laneId, newId, { direction })
+        drag.apply({ direction: Math.max(-1, Math.min(1, dy / STEM_MAX)) })
       }
       const onUp = () => {
         window.removeEventListener('mousemove', onMove)
         window.removeEventListener('mouseup', onUp)
+        drag.commit()
       }
       window.addEventListener('mousemove', onMove)
       window.addEventListener('mouseup', onUp)
@@ -165,6 +234,7 @@ export function TriggerBar({
     let mode = null
     let dragged = false
     const rect = svgRef.current?.getBoundingClientRect()
+    const drag = startDrag(target.id)
 
     const onMove = (me) => {
       const dx = me.clientX - startX
@@ -179,11 +249,9 @@ export function TriggerBar({
       }
 
       if (mode === 'move') {
-        const pos = Math.max(0, Math.min(1, startPos + dx / (rect?.width || 1)))
-        onUpdate(laneId, target.id, { position: pos })
+        drag.apply({ position: Math.max(0, Math.min(1, startPos + dx / (rect?.width || 1))) })
       } else {
-        const direction = Math.max(-1, Math.min(1, startDir - dy / STEM_MAX))
-        onUpdate(laneId, target.id, { direction })
+        drag.apply({ direction: Math.max(-1, Math.min(1, startDir - dy / STEM_MAX)) })
       }
     }
 
@@ -191,14 +259,13 @@ export function TriggerBar({
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
       // No drag = tap → cycle velocity
-      if (!dragged) {
-        onCycleVelocity?.(laneId, target.id)
-      }
+      if (dragged) drag.commit()
+      else onCycleVelocity?.(laneId, target.id)
     }
 
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }, [getTriggerAt, getSvgX, laneId, onAdd, onUpdate, onCycleVelocity])
+  }, [getTriggerAt, getSvgX, laneId, onAdd, startDrag, onCycleVelocity])
 
   const handleContextMenu = useCallback((e) => {
     e.preventDefault()
@@ -216,17 +283,18 @@ export function TriggerBar({
       const pos = Math.max(0, Math.min(1, getSvgX(touch.clientX)))
       const newId = onAdd(laneId, pos)
 
+      const drag = startDrag(newId)
       const startY = touch.clientY
       const onMove = (te) => {
         if (te.touches.length !== 1) return
         const t = te.touches[0]
         const dy = startY - t.clientY
-        const direction = Math.max(-1, Math.min(1, dy / STEM_MAX))
-        onUpdate(laneId, newId, { direction })
+        drag.apply({ direction: Math.max(-1, Math.min(1, dy / STEM_MAX)) })
       }
       const onEnd = () => {
         window.removeEventListener('touchmove', onMove)
         window.removeEventListener('touchend', onEnd)
+        drag.commit()
       }
       window.addEventListener('touchmove', onMove, { passive: false })
       window.addEventListener('touchend', onEnd)
@@ -241,6 +309,7 @@ export function TriggerBar({
     let dragged = false
     let deleted = false
     const rect = svgRef.current?.getBoundingClientRect()
+    const drag = startDrag(target.id)
 
     const longPressTimer = setTimeout(() => {
       deleted = true
@@ -265,11 +334,9 @@ export function TriggerBar({
       }
 
       if (mode === 'move') {
-        const pos = Math.max(0, Math.min(1, startPos + dx / (rect?.width || 1)))
-        onUpdate(laneId, target.id, { position: pos })
+        drag.apply({ position: Math.max(0, Math.min(1, startPos + dx / (rect?.width || 1))) })
       } else {
-        const direction = Math.max(-1, Math.min(1, startDir - dy / STEM_MAX))
-        onUpdate(laneId, target.id, { direction })
+        drag.apply({ direction: Math.max(-1, Math.min(1, startDir - dy / STEM_MAX)) })
       }
     }
 
@@ -277,14 +344,14 @@ export function TriggerBar({
       clearTimeout(longPressTimer)
       window.removeEventListener('touchmove', onMove)
       window.removeEventListener('touchend', onEnd)
-      if (!dragged && !deleted) {
-        onCycleVelocity?.(laneId, target.id)
-      }
+      if (deleted) return
+      if (dragged) drag.commit()
+      else onCycleVelocity?.(laneId, target.id)
     }
 
     window.addEventListener('touchmove', onMove, { passive: false })
     window.addEventListener('touchend', onEnd)
-  }, [getTriggerAt, getSvgX, laneId, onAdd, onUpdate, onDelete, onCycleVelocity])
+  }, [getTriggerAt, getSvgX, laneId, onAdd, startDrag, onDelete, onCycleVelocity])
 
   const cy = BAR_HEIGHT / 2
 
@@ -346,6 +413,9 @@ export function TriggerBar({
         const stemLen = Math.abs(t.direction) * STEM_MAX
         const stemY1 = t.direction > 0 ? cy - stemLen : cy
         const stemY2 = t.direction > 0 ? cy : cy + stemLen
+        // The stem is always rendered, even at zero length (butt-capped, so it
+        // paints nothing): a drag writes to it, and an element that comes and
+        // goes is one the drag would have to keep re-finding.
         const r = VELOCITY_RADIUS[t.velocity ?? 'high']
 
         return (
@@ -356,9 +426,7 @@ export function TriggerBar({
             style={{ color: triggerColor(t.direction) }}
           >
             <circle className="trigger-glow" cx={x} cy={cy} r={r + 6} />
-            {stemLen > 0.5 && (
-              <line className="trigger-stem" x1={x} y1={stemY1} x2={x} y2={stemY2} />
-            )}
+            <line className="trigger-stem" x1={x} y1={stemY1} x2={x} y2={stemY2} />
             <circle className="trigger-dot" cx={x} cy={cy} r={r} />
             <circle className="trigger-core" cx={x} cy={cy} r={Math.max(1, r - 2.5)} />
           </g>
