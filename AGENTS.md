@@ -30,6 +30,7 @@ src/
     TriggerBar.jsx      # SVG sequencer: click to place, drag to shape, right-click delete
   state/
     useAppState.js      # All app state + callbacks
+    persistence.js      # localStorage mirror: save debounced, load validated
   audio/
     engine.js           # AudioEngine + BoxChannel (gate, LPG, limiter, level)
     levels.js           # Gain staging: source normalization, volume taper
@@ -150,6 +151,45 @@ Measured with a main thread blocked 950 ms out of every second (what a
 throttled clock looks like to the scheduler): 14 of 15 triggers past due →
 after, 16 of 16 dispatched ahead of the audio clock, and a suspend-while-hidden
 now comes back to a full 12-triggers-per-loop pattern instead of silence.
+
+## Remembering a session
+
+The patch is mirrored into localStorage under `quadrivium.state.v1` and read
+back on load: tempo, master, and per box its knobs, switches, level, bypass and
+trigger pattern. `state/persistence.js` owns both halves.
+
+Two things deliberately don't come back:
+
+- **Samples.** A loaded sample is a decoded AudioBuffer behind a `blob:` URL,
+  and both die with the document. A restored box is back on its own voice.
+- **Playing.** An AudioContext only starts from a user gesture, so a restored
+  session always comes up stopped with its patch intact.
+
+Saves are **debounced** (400 ms). A knob or trigger drag changes state once per
+animation frame, and serializing the whole rack that often is exactly the
+main-thread work that makes a transport callback miss its lookahead window —
+see "Keeping the audio thread fed". A pending write is flushed on `pagehide`
+and on the tab going hidden, since a discarded tab may never run another timer.
+
+Everything read back is **re-validated against `boxes/definitions.js`** rather
+than trusted — numbers clamped to their param's range, switch values checked
+against that switch's options, junk triggers dropped. A hand-edited or
+half-migrated blob otherwise reaches the audio graph as a NaN, and a NaN in a
+Web Audio param throws where it lands rather than where it came from. Anything
+unusable (bad JSON, an unknown `version`, no storage at all) falls back to the
+seed pattern. A box with *no* stored entry seeds; a box with an empty stored
+pattern stays empty — clearing a lane is a decision, not an absence.
+
+localStorage itself is optional: a private window or blocked site data makes
+ordinary calls throw, so every access is guarded and the first failure turns
+persistence into a no-op rather than taking the app down.
+
+Restoring is a startup step, not a live sync — a second tab keeps its own patch
+until whichever one saves last. To start clean, `window.__quadrivium.resetState()`
+in a dev build (then reload), or clear the site's storage.
+
+Bumping `SCHEMA_VERSION` discards every stored patch, so reach for it only when
+a shape change can't be absorbed by the validators.
 
 ## Level calibration
 

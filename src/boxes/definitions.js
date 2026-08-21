@@ -220,6 +220,27 @@ export const BOXES = [
 
 export const BOX_BY_ID = Object.fromEntries(BOXES.map((b) => [b.id, b]))
 
+/** Transport controls in the header. `format` is supplied by the component. */
+export const BPM_DEF = {
+  key: 'bpm',
+  label: 'TEMPO',
+  min: 40,
+  max: 260,
+  def: 120,
+  curve: LIN,
+  step: 1,
+}
+
+export const MASTER_DEF = {
+  key: 'master',
+  label: 'MASTER',
+  min: 0,
+  max: 1,
+  def: 0.8,
+  curve: LIN,
+  unit: 'dB',
+}
+
 /** Every box also carries an output level; it lives outside `params`. */
 export const LEVEL_DEF = {
   key: 'level',
