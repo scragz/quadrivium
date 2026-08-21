@@ -31,6 +31,12 @@ const LPG_BASE = 70
 // Floor for exponential ramps — WebAudio can't ramp to or through zero.
 const EPSILON = 1e-4
 
+// How far past due a trigger may be and still be worth playing. Transport
+// callbacks normally arrive a lookahead window *early*; anything meaningfully
+// late means the main thread stalled (a hidden tab's throttled clock, a long
+// GC) and the transport is now catching up. See fireTrigger.
+const MAX_LATENESS = 0.1
+
 /**
  * One box: voice → gate → low-pass gate → voice FX → limiter → level → master.
  *
@@ -65,6 +71,8 @@ class BoxChannel {
     this.useSample = false
     this.muted = false
     this.level = 0.8
+    // Audio time the last scheduled envelope finishes closing at.
+    this.gateCloseAt = 0
   }
 
   setControls(params, switches) {
@@ -122,35 +130,83 @@ class BoxChannel {
   }
 
   fireTrigger(time, direction, velocity = 'high') {
+    const now = Tone.getContext().currentTime
+
+    // A stalled clock hands over every trigger it slept through at once, all of
+    // them past due. Clamping them to `now` used to stack a whole window of
+    // envelopes on a single instant — each one cancelling the last mid-rise, so
+    // what came out was a chopped blat rather than the pattern. A trigger whose
+    // moment has properly gone is better dropped: the loop comes round again.
+    if (time < now - MAX_LATENESS) return
+
+    // Within the tolerance, clamp instead. Ramping into the past makes Web
+    // Audio jump straight to the end value — the envelope collapses and you
+    // hear a chop. In the healthy case `time` is still ahead of `now` and
+    // nothing shifts.
+    const start = Math.max(time, now)
+
     const { attack, decay, peak } = getTriggerShape(direction)
     const gainPeak = VELOCITY_GAIN[velocity] ?? 1.0
-
-    // Transport callbacks run on the main thread, so a stall can hand us a time
-    // that has already passed. Ramping into the past makes Web Audio jump
-    // straight to the end value — the envelope collapses and you hear a chop.
-    // Clamp to the audio clock so a late trigger is merely late, not broken.
-    // In the healthy case `time` is still ahead of it and nothing shifts.
-    const start = Math.max(time, Tone.getContext().currentTime)
     const release = start + attack + decay
 
-    // cancelAndHoldAtTime retriggers from wherever the envelope currently is,
-    // instead of the hard reset to zero that used to click on overlapping hits.
-    // Read the held value *at* the start time, not at whatever `now` happens to
-    // be a lookahead-window earlier.
-    const freq = this.lpg.frequency
-    freq.cancelAndHoldAtTime(start)
-    freq.setValueAtTime(Math.max(freq.getValueAtTime(start), LPG_BASE), start)
-    freq.linearRampToValueAtTime(peak, start + attack)
-    freq.exponentialRampToValueAtTime(LPG_BASE, release)
+    // Whatever happens below, the gate has to end up closed. An exception
+    // between the rise and the fall would leave it wide open — a drone that
+    // nothing else in the app ever takes back down.
+    this.gateCloseAt = release + 0.008
 
-    const g = this.gateGain.gain
-    g.cancelAndHoldAtTime(start)
-    g.setValueAtTime(Math.max(g.getValueAtTime(start), EPSILON), start)
-    g.linearRampToValueAtTime(gainPeak, start + attack)
-    // Exponential decay reads as a natural fall; the short linear tail after it
-    // is what actually reaches silence, since exponentials never do.
-    g.exponentialRampToValueAtTime(EPSILON, release)
-    g.linearRampToValueAtTime(0, release + 0.008)
+    try {
+      // cancelAndHoldAtTime retriggers from wherever the envelope currently is,
+      // instead of the hard reset to zero that used to click on overlapping
+      // hits. Read the held value *at* the start time, not at whatever `now`
+      // happens to be a lookahead-window earlier.
+      const freq = this.lpg.frequency
+      freq.cancelAndHoldAtTime(start)
+      freq.setValueAtTime(Math.max(freq.getValueAtTime(start), LPG_BASE), start)
+      freq.linearRampToValueAtTime(peak, start + attack)
+      freq.exponentialRampToValueAtTime(LPG_BASE, release)
+
+      const g = this.gateGain.gain
+      g.cancelAndHoldAtTime(start)
+      g.setValueAtTime(Math.max(g.getValueAtTime(start), EPSILON), start)
+      g.linearRampToValueAtTime(gainPeak, start + attack)
+      // Exponential decay reads as a natural fall; the short linear tail after
+      // it is what actually reaches silence, since exponentials never do.
+      g.exponentialRampToValueAtTime(EPSILON, release)
+      g.linearRampToValueAtTime(0, this.gateCloseAt)
+    } catch (err) {
+      this.panicGate()
+      throw err
+    }
+  }
+
+  /** Slam the gate shut. The recovery path when an envelope was left half-built. */
+  panicGate() {
+    const now = Tone.getContext().currentTime
+    try {
+      this.gateGain.gain.cancelScheduledValues(now)
+      this.gateGain.gain.setValueAtTime(0, now)
+      this.lpg.frequency.cancelScheduledValues(now)
+      this.lpg.frequency.setValueAtTime(LPG_BASE, now)
+    } catch (_) {}
+    this.gateCloseAt = 0
+  }
+
+  /**
+   * Close a gate that is open with nothing left scheduled to close it.
+   *
+   * Called on the way back from a hidden tab. Comparing against the last
+   * envelope's own end time means a note still ringing is left alone — only a
+   * genuinely stranded gate gets cut.
+   */
+  recoverStuckGate() {
+    const now = Tone.getContext().currentTime
+    if (now <= this.gateCloseAt + 0.05) return
+    if (this.gateGain.gain.value <= EPSILON) return
+    this.gateGain.gain.cancelScheduledValues(now)
+    this.gateGain.gain.linearRampToValueAtTime(0, now + 0.02)
+    this.lpg.frequency.cancelScheduledValues(now)
+    this.lpg.frequency.linearRampToValueAtTime(LPG_BASE, now + 0.02)
+    this.gateCloseAt = 0
   }
 
   resetGate() {
@@ -158,6 +214,7 @@ class BoxChannel {
     this.gateGain.gain.cancelScheduledValues(0)
     this.lpg.frequency.rampTo(LPG_BASE, 0.1)
     this.gateGain.gain.rampTo(0, 0.1)
+    this.gateCloseAt = 0
   }
 
   dispose() {
@@ -179,6 +236,7 @@ class AudioEngine {
 
     this.channels = new Map() // boxId → BoxChannel
     this.scheduledEvents = []
+    this._boxesData = []
     this.bpm = 120
     this.barLength = this._calcBarLength(120)
     this.playing = false
@@ -238,6 +296,7 @@ class AudioEngine {
   // Schedule all triggers for the boxes
   _scheduleTriggers(boxesData) {
     this._clearScheduled()
+    this._boxesData = boxesData
 
     const transport = Tone.getTransport()
 
@@ -248,7 +307,15 @@ class AudioEngine {
       box.triggers.forEach((trigger) => {
         const triggerTime = trigger.position * this.barLength
         const eventId = transport.schedule((time) => {
-          channel.fireTrigger(time, trigger.direction, trigger.velocity ?? 'high')
+          // Tone dispatches every tick due in one pass and aborts the whole
+          // pass on a throw, so an unhappy box would silence the other three
+          // for that window. Contain it here.
+          try {
+            channel.fireTrigger(time, trigger.direction, trigger.velocity ?? 'high')
+          } catch (err) {
+            console.error(`[quadrivium] trigger failed on ${box.id}`, err)
+            channel.panicGate()
+          }
         }, triggerTime)
         this.scheduledEvents.push(eventId)
       })
@@ -298,6 +365,29 @@ class AudioEngine {
   rescheduleTriggers(boxesData) {
     if (!this.playing) return
     this._scheduleTriggers(boxesData)
+  }
+
+  /**
+   * Put the engine back on its feet after the page was away.
+   *
+   * A hidden tab freezes rAF, may suspend the audio context, and starves the
+   * transport clock — so on the way back: pick the playhead loop up again,
+   * rebuild the schedule in case the timeline was left mid-catch-up, and close
+   * any gate that got stranded open. Safe to call when nothing was wrong.
+   */
+  resync() {
+    if (!this.playing) return
+    if (Tone.getContext().rawContext.state !== 'running') return
+
+    this._startPlayheadRaf()
+    this._scheduleTriggers(this._boxesData)
+    this.channels.forEach((channel) => channel.recoverStuckGate())
+
+    // rAF was frozen while we were away, so the playhead's last known position
+    // is stale by however long that was. Republish it as a discontinuity so
+    // subscribers don't read the jump as "the playhead crossed all of these".
+    const pos = Tone.getTransport().seconds % this.barLength
+    publishPlayhead(pos / this.barLength, true)
   }
 
   _startPlayheadRaf() {

@@ -101,6 +101,56 @@ Measured under a 10× CPU throttle, before → after: main thread blocked
 60 ms *after* their scheduled time → never later than their schedule, held
 steady across a three-minute run.
 
+## Surviving a backgrounded tab
+
+Losing focus used to wreck playback and never give it back. Two separate
+browser behaviours, neither of which fixes itself, both handled in
+`audio/lifecycle.js`:
+
+**The transport clock gets throttled.** Tone drives the transport from a Web
+Worker timer, and a hidden page has its timers throttled — down to roughly one
+wake per second. A clock that only wakes once a second cannot see the default
+100 ms `lookAhead` window, so every trigger it slept through arrives *past due*,
+all in one pass. `fireTrigger` clamped those to `currentTime`, which stacked a
+whole window of envelopes onto a single instant, each one cancelling the last
+mid-rise: the chopped blat you heard on coming back.
+
+So `lookAhead` widens to 1.2 s while the page is hidden and returns to 0.1 s on
+the way back. A slow clock still schedules ahead of the audio, and the pattern
+plays through correctly. Shrinking `lookAhead` makes Tone's clock re-dispatch
+the ticks it already sent (its `_lastUpdate` moves backwards), but a re-dispatch
+here is a no-op — the same trigger at the same audio time just rebuilds an
+identical envelope, and the tick order guarantees nothing is left un-scheduled
+ahead of the playhead. Verified: no duplicate or missing triggers across a
+hide/show cycle.
+
+**The AudioContext gets suspended.** Safari does it on blur, Chrome does it to a
+hidden page that has been outputting silence — and this app *is* silent between
+triggers, so it qualifies. A suspended context never resumes itself and nothing
+here used to ask it to, which is the "never recovers" half. `visibilitychange`,
+`focus`, `pageshow` and the context's own `statechange` all route to a resume,
+followed by `engine.resync()`.
+
+Backing that up:
+
+- `fireTrigger` **drops** a trigger more than `MAX_LATENESS` (100 ms) past due
+  rather than clamping it. Its moment has gone; the loop comes round again.
+  Only small slips still clamp.
+- The gate's closing ramp can never be skipped: `fireTrigger` catches, slams the
+  gate shut and rethrows, so a half-built envelope can't leave a box droning.
+- Each transport callback is wrapped, because Tone dispatches every due tick in
+  one pass and aborts the whole pass on a throw — one unhappy box would
+  otherwise silence the other three for that window.
+- `engine.resync()` restarts the playhead rAF (frozen while hidden), rebuilds
+  the schedule, republishes the playhead as a discontinuity so `TriggerBar`
+  doesn't flash everything it "crossed", and closes any gate left open past its
+  own recorded release time — a note still ringing is left alone.
+
+Measured with a main thread blocked 950 ms out of every second (what a
+throttled clock looks like to the scheduler): 14 of 15 triggers past due →
+after, 16 of 16 dispatched ahead of the audio clock, and a suspend-while-hidden
+now comes back to a full 12-triggers-per-loop pattern instead of silence.
+
 ## Level calibration
 
 This is the part that will bite you if you skip it. Sources in Web Audio are
