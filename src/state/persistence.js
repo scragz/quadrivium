@@ -34,8 +34,21 @@ const STORAGE_KEY = 'quadrivium.state.v1'
 /** Bumped only for a shape change the validators below can't absorb. */
 const SCHEMA_VERSION = 1
 
-/** A knob drag writes state 60x a second; the disk write waits for a pause. */
-const SAVE_DEBOUNCE_MS = 400
+/**
+ * How long the patch has to sit still before it is written.
+ *
+ * A knob or trigger drag changes state once per animation frame, and every one
+ * of those pushes the write back — so a drag writes nothing at all until you
+ * let go, rather than once per window while your hand is still moving.
+ */
+const SAVE_IDLE_MS = 1500
+
+/**
+ * Ceiling on the idle wait once the patch has settled. A page that never goes
+ * idle — playing, with a rAF playhead — would otherwise defer the write
+ * indefinitely, so past this the callback runs regardless.
+ */
+const IDLE_TIMEOUT_MS = 2000
 
 /** Enough for a dense pattern, small enough that a junk blob can't stall us. */
 const MAX_TRIGGERS_PER_BOX = 256
@@ -195,6 +208,10 @@ function serialize({ bpm, masterVolume, boxes }) {
 
 let pending = null
 let timer = null
+let idleId = null
+
+const requestIdle = typeof requestIdleCallback === 'function' ? requestIdleCallback : null
+const cancelIdle = typeof cancelIdleCallback === 'function' ? cancelIdleCallback : null
 
 function write(snapshot) {
   const ls = getStorage()
@@ -207,44 +224,66 @@ function write(snapshot) {
   }
 }
 
-/**
- * Queue a save.
- *
- * Debounced because this runs on every state change, and a knob drag or a
- * trigger drag produces one per animation frame. Serializing and writing that
- * often is exactly the kind of main-thread work that makes a transport
- * callback miss its lookahead window — see AGENTS.md ("Keeping the audio
- * thread fed").
- */
-export function persistState(snapshot) {
-  if (!getStorage()) return
-  pending = snapshot
-  if (timer !== null) return
-  timer = setTimeout(() => {
-    timer = null
-    const snap = pending
-    pending = null
-    if (snap) write(snap)
-  }, SAVE_DEBOUNCE_MS)
-}
-
-/** Write any queued save immediately — for a tab that may not come back. */
-export function flushPersistedState() {
-  if (timer !== null) {
-    clearTimeout(timer)
-    timer = null
-  }
+function commit() {
   const snap = pending
   pending = null
   if (snap) write(snap)
 }
 
-/** Drop the saved patch. The next load comes up on the seed pattern. */
-export function clearPersistedState() {
+/**
+ * Queue a save.
+ *
+ * This runs on every state change — once per animation frame under a drag —
+ * so the write is kept off the frame twice over: the timer restarts on each
+ * change, so an unbroken drag writes nothing until it ends, and the write
+ * itself then waits for an idle callback rather than landing in whatever the
+ * page is doing. Anything on the main thread competes with the transport's
+ * lookahead window; see AGENTS.md ("Keeping the audio thread fed").
+ */
+export function persistState(snapshot) {
+  if (!getStorage()) return
+  pending = snapshot
+  if (timer !== null) clearTimeout(timer)
+  timer = setTimeout(() => {
+    timer = null
+    if (!requestIdle) {
+      commit()
+      return
+    }
+    idleId = requestIdle(() => {
+      idleId = null
+      commit()
+    }, { timeout: IDLE_TIMEOUT_MS })
+  }, SAVE_IDLE_MS)
+}
+
+/**
+ * Write any queued save immediately — for a tab that may not come back.
+ *
+ * With a trailing debounce this is what guarantees a save at all: leaving the
+ * page mid-drag banks the patch that was never idle long enough to write.
+ */
+export function flushPersistedState() {
+  cancelScheduled()
+  commit()
+}
+
+function cancelScheduled() {
   if (timer !== null) {
     clearTimeout(timer)
     timer = null
   }
+  if (idleId !== null) {
+    // Without cancelIdleCallback the callback still fires; commit() finds
+    // nothing pending and does nothing.
+    cancelIdle?.(idleId)
+    idleId = null
+  }
+}
+
+/** Drop the saved patch. The next load comes up on the seed pattern. */
+export function clearPersistedState() {
+  cancelScheduled()
   pending = null
   const ls = getStorage()
   if (!ls) return

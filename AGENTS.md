@@ -165,11 +165,20 @@ Two things deliberately don't come back:
 - **Playing.** An AudioContext only starts from a user gesture, so a restored
   session always comes up stopped with its patch intact.
 
-Saves are **debounced** (400 ms). A knob or trigger drag changes state once per
-animation frame, and serializing the whole rack that often is exactly the
-main-thread work that makes a transport callback miss its lookahead window —
-see "Keeping the audio thread fed". A pending write is flushed on `pagehide`
-and on the tab going hidden, since a discarded tab may never run another timer.
+Saves are kept off the frame twice over. A knob or trigger drag changes state
+once per animation frame, and anything on the main thread competes with the
+transport's lookahead window — see "Keeping the audio thread fed". So the save
+timer **restarts on every change** (1.5 s), meaning an unbroken drag writes
+nothing at all until you let go, and the write then waits for
+`requestIdleCallback` rather than landing in whatever the page is doing. A
+playing page never really goes idle, so that wait is capped at 2 s.
+
+Measured across a 6-second trigger drag: 13 writes before, 0 after.
+
+That leaves a trailing debounce with no periodic save behind it, so the flush is
+what guarantees a save at all — a pending write goes down on `pagehide` and on
+the tab going hidden, since a discarded tab may never run another timer, and
+leaving mid-drag banks a patch that was never idle long enough to write.
 
 Everything read back is **re-validated against `boxes/definitions.js`** rather
 than trusted — numbers clamped to their param's range, switch values checked
