@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react'
+import { ExportButton } from './components/ExportButton.jsx'
 import { Knob } from './components/Knob.jsx'
 import { SoundBox } from './components/SoundBox.jsx'
 import { useAppState } from './state/useAppState.js'
@@ -31,12 +32,20 @@ export default function App() {
     clearTriggers,
   } = useAppState()
 
-  const boxesRef = useRef(boxes)
-  boxesRef.current = boxes
+  // A knob or trigger drag rewrites this on every animation frame, so the
+  // callbacks below read it through a ref rather than closing over it — a
+  // changing dependency would rebuild them just as often. See AGENTS.md.
+  const patchRef = useRef(null)
+  patchRef.current = { bpm, masterVolume, boxes }
 
   const handleTogglePlay = useCallback(() => {
-    togglePlay(boxesRef.current)
+    togglePlay(patchRef.current.boxes)
   }, [togglePlay])
+
+  const getPatch = useCallback(() => patchRef.current, [])
+
+  // Nothing to render: every box is either switched off or has an empty lane.
+  const silent = !boxes.some((b) => !b.muted && b.triggers.length > 0)
 
   return (
     <div className="app">
@@ -49,6 +58,7 @@ export default function App() {
         <div className="transport">
           <Knob def={bpmDef} value={bpm} onChange={setBpm} size={36} />
           <Knob def={masterDef} value={masterVolume} onChange={setMasterVolume} size={36} />
+          <ExportButton getPatch={getPatch} disabled={silent} />
           <button
             type="button"
             className={`play ${playing ? 'on' : ''}`}

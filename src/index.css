@@ -122,6 +122,45 @@ body {
   box-shadow: 0 0 16px rgba(185, 163, 255, 0.45);
 }
 
+/* Offline render → .wav. Shares the play button's shell, quieter and wider:
+   a secondary action standing next to the primary one. The width is fixed so
+   the label can change without the transport shuffling sideways. */
+.play.export {
+  min-width: 70px;
+  padding: 10px 10px;
+  font-family: inherit;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: var(--text-dim);
+}
+
+.play.export:hover:not(:disabled) { color: var(--text); }
+
+.play.export:disabled {
+  opacity: 0.4;
+  border-color: var(--border);
+  cursor: not-allowed;
+}
+
+.play.export.working {
+  color: var(--accent);
+  animation: export-pulse 1.1s ease-in-out infinite;
+}
+
+.play.export.error {
+  color: #ff8f8f;
+  border-color: rgba(255, 143, 143, 0.5);
+}
+
+@keyframes export-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .play.export.working { animation: none; opacity: 0.7; }
+}
+
 /* ── Rack ───────────────────────────────────────────────────────────────── */
 
 .rack {

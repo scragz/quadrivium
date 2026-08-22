@@ -17,6 +17,7 @@ const EQUAL = {
 }
 
 const WAVEFORM = 'sawtooth'
+const DEFAULT_DECAY = 3.5
 const VOICE_COUNT = 4
 
 // Measured compensation for this box's default effect chain — see AGENTS.md.
@@ -34,7 +35,7 @@ export function createMusicVoice() {
   oscs.forEach((o) => o.connect(trim))
 
   const chorus = new Tone.Chorus({ frequency: 0.6, delayTime: 4, depth: 0.6, wet: 0.4 })
-  const reverb = new Tone.Reverb({ decay: 3.5, wet: 0.35 })
+  const reverb = new Tone.Reverb({ decay: DEFAULT_DECAY, wet: 0.35 })
   const tone = new Tone.Filter({ type: 'lowpass', frequency: 5200, rolloff: -12, Q: 0.7 })
   const out = new Tone.Gain(FX_MAKEUP)
   chorus.connect(reverb)
@@ -43,7 +44,16 @@ export function createMusicVoice() {
 
   let running = false
   let decayTimer = null
-  let appliedDecay = 3.5
+  let appliedDecay = DEFAULT_DECAY
+  let pendingDecay = DEFAULT_DECAY
+
+  function flushDecay() {
+    clearTimeout(decayTimer)
+    decayTimer = null
+    if (pendingDecay === appliedDecay) return
+    appliedDecay = pendingDecay
+    reverb.decay = pendingDecay
+  }
 
   return {
     sourceOut: trim,
@@ -89,15 +99,21 @@ export function createMusicVoice() {
 
       // Reverb rebuilds its impulse response on every decay change, so only
       // act on a settled value.
+      pendingDecay = p.decay
       if (Math.abs(p.decay - appliedDecay) > 0.05) {
         clearTimeout(decayTimer)
-        decayTimer = setTimeout(() => {
-          appliedDecay = p.decay
-          reverb.decay = p.decay
-        }, 220)
+        decayTimer = setTimeout(flushDecay, 220)
       }
 
       tone.frequency.rampTo(p.tone, 0.05)
+    },
+
+    // Nobody waits 220 ms for a debounce inside an offline render, and an
+    // ungenerated impulse response renders as silence on the wet path — so
+    // settle the decay, then wait for the IR it asks for.
+    async ready() {
+      flushDecay()
+      await reverb.ready
     },
 
     dispose() {

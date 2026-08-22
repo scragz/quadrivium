@@ -1,5 +1,3 @@
-import * as Tone from 'tone'
-
 // Nothing in this app survives a backgrounded tab on its own, so this module
 // owns the whole "page went away and came back" story.
 //
@@ -17,6 +15,10 @@ import * as Tone from 'tone'
 // The fix for (1) is to widen the scheduling window while hidden so a slow
 // clock still schedules ahead of the audio; the fix for (2) is to resume the
 // context and then let the engine re-sync itself.
+//
+// Everything here goes through `engine.context` rather than Tone's global one,
+// which an offline render borrows for the length of its setup — see
+// audio/render.js.
 
 // lookAhead also sets updateInterval (to half of it) in Tone.
 const FOREGROUND_LOOKAHEAD = 0.1
@@ -30,10 +32,9 @@ function isHidden() {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden'
 }
 
-function setLookAhead(seconds) {
-  const context = Tone.getContext()
-  if (context.lookAhead === seconds) return
-  context.lookAhead = seconds
+function setLookAhead(engine, seconds) {
+  if (engine.context.lookAhead === seconds) return
+  engine.context.lookAhead = seconds
 }
 
 /**
@@ -45,7 +46,7 @@ function setLookAhead(seconds) {
  */
 function resumeContext(engine) {
   if (!engine.playing) return
-  const context = Tone.getContext()
+  const context = engine.context
   if (context.rawContext.state === 'running') return
   Promise.resolve(context.resume())
     .then(() => engine.resync())
@@ -58,11 +59,11 @@ export function installAudioLifecycle(engine) {
 
   const onHidden = () => {
     // Schedule deeper, so a throttled clock still lands its triggers on time.
-    setLookAhead(BACKGROUND_LOOKAHEAD)
+    setLookAhead(engine, BACKGROUND_LOOKAHEAD)
   }
 
   const onVisible = () => {
-    setLookAhead(FOREGROUND_LOOKAHEAD)
+    setLookAhead(engine, FOREGROUND_LOOKAHEAD)
     resumeContext(engine)
     engine.resync()
   }
@@ -81,7 +82,7 @@ export function installAudioLifecycle(engine) {
 
   // The context can be suspended out from under us at any time — an OS audio
   // interruption, a device change. Take the state change as the cue.
-  Tone.getContext().on('statechange', (state) => {
+  engine.context.on('statechange', (state) => {
     if (state !== 'running' && !isHidden()) resumeContext(engine)
   })
 
