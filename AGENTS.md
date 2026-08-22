@@ -171,6 +171,52 @@ throttled clock looks like to the scheduler): 14 of 15 triggers past due →
 after, 16 of 16 dispatched ahead of the audio clock, and a suspend-while-hidden
 now comes back to a full 12-triggers-per-loop pattern instead of silence.
 
+## When the window runs out of room
+
+`lookAhead` is the app's entire margin for error. Tone dispatches a transport
+callback that far ahead of the audio time it schedules for, so anything that
+keeps the main thread busy for longer than the window lands the trigger past
+due — and `fireTrigger` answers a trigger more than 100 ms late by dropping it
+and one inside that tolerance by clamping it. Hits go missing; the clamped ones
+pile onto a single instant and chop. That is what "it started distorting and
+losing individual hits" is, every time.
+
+A hidden tab already got a 1.2 s window, because its clock is *known* to be
+throttled. A visible page that was merely struggling got nothing: the window
+stayed at 0.1 s no matter how late triggers arrived, and nothing in the app
+ever asked for more. Whatever the cause — a busy machine, a long GC, an
+occluded window whose timers the browser throttled without ever marking the
+page hidden — it degraded and stayed degraded.
+
+So the dispatch measures itself. `_noteDispatch` reads the slack every
+transport callback arrives with, and:
+
+- **past due** → the lateness *is* the shortfall, so the window jumps straight
+  to covering it, plus 100 ms. Creeping up in fixed steps costs a handful of
+  dropped hits per step, and the stall is usually still there.
+- **under 20 ms of slack, twice running** → not late yet, but the next stall of
+  any size will be. Widen by 150 ms.
+- **48 consecutive dispatches with more than half the window to spare** → give
+  50 ms back. Slower out than in, because re-widening costs a dropped hit and
+  an over-wide window costs nothing but lag on a live edit.
+
+The ceiling is the same 1.2 s the hidden-tab path uses, the borrowed part sits
+on top of whatever visibility asks for (so it survives a tab switch), and
+`stop()` hands it all back. It warns once per run when it first widens, so the
+console says what happened rather than leaving you guessing.
+
+Measured with the main thread blocked 900 ms out of every second for 40 s:
+
+| | triggers | dropped | worst arrival | window |
+|---|---|---|---|---|
+| before | 60 | 17 | 726 ms past due | 0.10 s throughout |
+| after  | 62 | 2  | 738 ms past due | rose to the 1.2 s ceiling, relaxed back |
+
+The drops that remain are the first one or two, before anything has been
+measured — across runs it lands between 1 and 2. A healthy run is untouched:
+six minutes of the seed pattern never leaves 0.10 s, since dispatches arrive
+with ~50 ms of slack, comfortably above the 20 ms floor.
+
 ## Remembering a session
 
 The patch is mirrored into localStorage under `quadrivium.state.v1` and read

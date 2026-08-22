@@ -31,6 +31,34 @@ const LPG_BASE = 70
 // Floor for exponential ramps — WebAudio can't ramp to or through zero.
 const EPSILON = 1e-4
 
+// The scheduling window. Tone dispatches a transport callback this far ahead
+// of the audio time it schedules for, so it is also the app's whole margin for
+// error: anything that keeps the main thread busy for longer lands the trigger
+// past due. 0.1 s is Tone's default and what a healthy page runs at; 1.2 s
+// survives a clock throttled to one tick per second, which is what a hidden
+// tab gets. See audio/lifecycle.js.
+//
+// Setting it also sets Tone's `updateInterval` (to half of it), so a wide
+// window is a slower clock as well as a deeper one — which is why it is given
+// back once the page can afford to.
+export const FOREGROUND_LOOKAHEAD = 0.1
+export const BACKGROUND_LOOKAHEAD = 1.2
+
+// Below this much slack at dispatch, the window is no longer covering whatever
+// the main thread is doing and the next stall lands a trigger past due.
+const SLACK_FLOOR = 0.02
+// Consecutive tight dispatches before widening on slack alone, and the step it
+// widens by. A trigger that is actually past due doesn't wait for a run — it
+// has already measured the stall, and the window jumps to cover it.
+const TIGHTEN_RUN = 2
+const WIDEN_STEP = 0.15
+// Headroom on top of a measured stall, since the next one is rarely smaller.
+const WIDEN_MARGIN = 0.1
+// Consecutive comfortable dispatches before giving the window back, and the
+// step it gives back by. Slower out than in: re-widening costs a dropped hit.
+const RELAX_RUN = 48
+const RELAX_STEP = 0.05
+
 // How far past due a trigger may be and still be worth playing. Transport
 // callbacks normally arrive a lookahead window *early*; anything meaningfully
 // late means the main thread stalled (a hidden tab's throttled clock, a long
@@ -260,7 +288,9 @@ export function createMasterBus(volume) {
   const limiter = new Tone.Limiter(MASTER_CEILING)
   master.connect(limiter)
   limiter.toDestination()
-  return master
+  // Both nodes come back: a node in the signal path that nothing holds is left
+  // to the graph's own lifetime rules, which is not a thing to rely on.
+  return { master, limiter }
 }
 
 /** One loop is 4 bars of 4 beats. */
@@ -278,7 +308,9 @@ class AudioEngine {
     this.context = Tone.getContext()
     this.transport = this.context.transport
 
-    this.master = createMasterBus(0.8)
+    const bus = createMasterBus(0.8)
+    this.master = bus.master
+    this.masterLimiter = bus.limiter
 
     this.channels = new Map() // boxId → BoxChannel
     // `${boxId}:${triggerId}` → { id, trigger }. The trigger record is mutable
@@ -289,6 +321,95 @@ class AudioEngine {
     this.barLength = this._calcBarLength(120)
     this.playing = false
     this._rafId = null
+
+    // The scheduling window, as two parts: what the page's visibility asks for
+    // and what a struggling clock has had to borrow on top. See _noteDispatch.
+    this._baseLookAhead = FOREGROUND_LOOKAHEAD
+    this._extraLookAhead = 0
+    this._tightRun = 0
+    this._comfortableRun = 0
+    this._warnedLate = false
+  }
+
+  /**
+   * Set the window the page's visibility asks for. Anything the engine has
+   * borrowed on top of it for a struggling clock is preserved.
+   */
+  setBaseLookAhead(seconds) {
+    this._baseLookAhead = seconds
+    this._applyLookAhead()
+  }
+
+  _applyLookAhead() {
+    const next = Math.min(this._baseLookAhead + this._extraLookAhead, BACKGROUND_LOOKAHEAD)
+    if (this.context.lookAhead === next) return
+    this.context.lookAhead = next
+  }
+
+  /**
+   * Widen the scheduling window when triggers start arriving with no slack.
+   *
+   * A hidden tab gets a wider window because its clock is known to be
+   * throttled. A *visible* page had nothing: whatever the cause — a busy
+   * machine, a long GC, an occluded window whose timers the browser throttled
+   * without ever marking it hidden — the window stayed at 0.1 s while every
+   * trigger landed further past due, and `fireTrigger` dropped them one by one.
+   * Hits go missing, the ones inside the tolerance clamp and stack, and nothing
+   * in the app ever asks for more room.
+   *
+   * So the dispatch itself is the measurement. Slack running out is the signal
+   * to borrow more window, immediately; a long run of comfortable dispatches
+   * gives it back in smaller steps, because re-widening costs a dropped hit and
+   * a window that is too wide costs nothing but lag on a live edit.
+   */
+  _noteDispatch(time) {
+    const slack = time - this.context.currentTime
+
+    // Past due. However late this one is, is how far short the window fell —
+    // so jump straight to covering it. Creeping up in fixed steps costs a
+    // handful of dropped hits per step, and the stall is usually still there.
+    if (slack < 0) {
+      this._tightRun = 0
+      this._comfortableRun = 0
+      this._widen(this._extraLookAhead - slack + WIDEN_MARGIN)
+      return
+    }
+
+    // Not late, but with no room to spare: the next stall of any size lands
+    // past due. Widen a step at a time, once it has happened twice running.
+    if (slack < SLACK_FLOOR) {
+      this._comfortableRun = 0
+      if (++this._tightRun < TIGHTEN_RUN) return
+      this._tightRun = 0
+      this._widen(this._extraLookAhead + WIDEN_STEP)
+      return
+    }
+
+    // Comfortable is measured against the current window, not a fixed number —
+    // otherwise a window that has just been widened always looks roomy and the
+    // two rules oscillate against each other.
+    this._tightRun = 0
+    if (this._extraLookAhead <= 0) return
+    if (slack < this.context.lookAhead * 0.5) {
+      this._comfortableRun = 0
+      return
+    }
+    if (++this._comfortableRun < RELAX_RUN) return
+    this._comfortableRun = 0
+    this._extraLookAhead = Math.max(0, this._extraLookAhead - RELAX_STEP)
+    this._applyLookAhead()
+  }
+
+  _widen(extra) {
+    const capped = Math.min(extra, BACKGROUND_LOOKAHEAD - this._baseLookAhead)
+    if (capped <= this._extraLookAhead) return
+    this._extraLookAhead = capped
+    this._applyLookAhead()
+    if (this._warnedLate) return
+    this._warnedLate = true
+    console.warn(
+      `[quadrivium] triggers arriving without slack; widening the scheduling window to ${this.context.lookAhead.toFixed(2)}s`
+    )
   }
 
   _calcBarLength(bpm) {
@@ -355,6 +476,9 @@ class AudioEngine {
 
   _scheduleOne(boxId, channel, trigger) {
     const eventId = this.transport.schedule((time) => {
+      // How much slack this callback arrived with is the only direct read on
+      // whether the scheduling window still covers the main thread.
+      this._noteDispatch(time)
       // Tone dispatches every tick due in one pass and aborts the whole
       // pass on a throw, so an unhappy box would silence the other three
       // for that window. Contain it here.
@@ -435,6 +559,13 @@ class AudioEngine {
 
     this.playing = false
     this._stopPlayheadRaf()
+
+    // Borrowed window goes back with the transport; the next run starts fresh.
+    this._extraLookAhead = 0
+    this._tightRun = 0
+    this._comfortableRun = 0
+    this._warnedLate = false
+    this._applyLookAhead()
   }
 
   rescheduleTriggers(boxesData) {

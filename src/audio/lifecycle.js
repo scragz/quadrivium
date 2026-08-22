@@ -1,3 +1,5 @@
+import { BACKGROUND_LOOKAHEAD, FOREGROUND_LOOKAHEAD } from './engine.js'
+
 // Nothing in this app survives a backgrounded tab on its own, so this module
 // owns the whole "page went away and came back" story.
 //
@@ -16,25 +18,20 @@
 // clock still schedules ahead of the audio; the fix for (2) is to resume the
 // context and then let the engine re-sync itself.
 //
+// Visibility is only the half of it this module can see. A window can have its
+// timers throttled without ever being marked hidden, and a machine can simply
+// run out of room — so the engine widens the window on its own when triggers
+// start arriving with no slack, on top of whatever is asked for here. See
+// `_noteDispatch` in audio/engine.js.
+//
 // Everything here goes through `engine.context` rather than Tone's global one,
 // which an offline render borrows for the length of its setup — see
 // audio/render.js.
-
-// lookAhead also sets updateInterval (to half of it) in Tone.
-const FOREGROUND_LOOKAHEAD = 0.1
-// Survives a clock throttled to one tick per second, which is what Chrome's
-// intensive throttling does to a hidden page.
-const BACKGROUND_LOOKAHEAD = 1.2
 
 let installed = false
 
 function isHidden() {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden'
-}
-
-function setLookAhead(engine, seconds) {
-  if (engine.context.lookAhead === seconds) return
-  engine.context.lookAhead = seconds
 }
 
 /**
@@ -59,11 +56,13 @@ export function installAudioLifecycle(engine) {
 
   const onHidden = () => {
     // Schedule deeper, so a throttled clock still lands its triggers on time.
-    setLookAhead(engine, BACKGROUND_LOOKAHEAD)
+    engine.setBaseLookAhead(BACKGROUND_LOOKAHEAD)
   }
 
   const onVisible = () => {
-    setLookAhead(engine, FOREGROUND_LOOKAHEAD)
+    // Back to the foreground baseline. Anything the engine borrowed on top of
+    // it for a struggling clock is its own business and survives this.
+    engine.setBaseLookAhead(FOREGROUND_LOOKAHEAD)
     resumeContext(engine)
     engine.resync()
   }

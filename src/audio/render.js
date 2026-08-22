@@ -56,9 +56,14 @@ export async function exportLoopWav({ bpm, masterVolume, boxes }) {
   const loopSeconds = barLengthFor(bpm)
   const tailSeconds = tailFor(boxes)
 
+  // Held out here so nothing on the master path is unreferenced while the
+  // render runs — the callback's own scope is finished with by then.
+  let bus = null
+
   const rendered = await Tone.Offline(
     async (offline) => {
-      const master = createMasterBus(masterVolume)
+      bus = createMasterBus(masterVolume)
+      const master = bus.master
       const channels = []
 
       boxes.forEach((box) => {
@@ -99,6 +104,9 @@ export async function exportLoopWav({ bpm, masterVolume, boxes }) {
     CHANNEL_COUNT,
     sampleRate
   )
+
+  // Rendered; the offline graph can go.
+  bus = null
 
   const channels = foldTail(rendered, sampleRate, loopSeconds)
 
