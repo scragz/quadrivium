@@ -10,6 +10,9 @@ import { clamp, noiseBandRms, trimFor } from '../levels.js'
 
 const LFO_TYPE = { circle: 'sine', ellipse: 'triangle', comet: 'sawtooth' }
 
+/** The void is fixed-length; VOID is how much of it you hear, not how long. */
+export const REVERB_DECAY = 8
+
 // Measured compensation for this box's default effect chain — see AGENTS.md.
 const FX_MAKEUP = 1.33
 
@@ -29,7 +32,7 @@ export function createAstronomyVoice() {
   lfo.connect(band.frequency)
 
   const phaser = new Tone.Phaser({ frequency: 0.25, octaves: 3, baseFrequency: 300, wet: 0.3 })
-  const reverb = new Tone.Reverb({ decay: 8, wet: 0.45 })
+  const reverb = new Tone.Reverb({ decay: REVERB_DECAY, wet: 0.45 })
   const out = new Tone.Gain(FX_MAKEUP)
   phaser.connect(reverb)
   reverb.connect(out)
@@ -80,7 +83,7 @@ export function createAstronomyVoice() {
 
       // The whole point: a narrow band discards most of the noise's energy, so
       // the makeup gain is recomputed from the live radius and aperture.
-      const sr = Tone.getContext().sampleRate
+      const sr = band.context.sampleRate
       trim.gain.rampTo(trimFor(noiseBandRms(color, radius, q, sr)), 0.06)
 
       const ph = clamp(p.phase, 0, 1)
@@ -88,6 +91,12 @@ export function createAstronomyVoice() {
       phaser.frequency.rampTo(0.05 + ph * 1.2, 0.1)
 
       reverb.wet.rampTo(clamp(p.void, 0, 1), 0.06)
+    },
+
+    // An offline render starts the moment the graph is built, and an
+    // ungenerated impulse response renders as silence on the wet path.
+    async ready() {
+      await reverb.ready
     },
 
     dispose() {

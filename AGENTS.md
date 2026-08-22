@@ -28,11 +28,14 @@ src/
     Switch.jsx          # Multi-position slide switch
     Sigil.jsx           # Per-box SVG faceplate marks
     TriggerBar.jsx      # SVG sequencer: click to place, drag to shape, right-click delete
+    ExportButton.jsx    # Renders the loop offline and hands over the .wav
   state/
     useAppState.js      # All app state + callbacks
     persistence.js      # localStorage mirror: save debounced, load validated
   audio/
     engine.js           # AudioEngine + BoxChannel (gate, LPG, limiter, level)
+    render.js           # Offline render of the loop, tail wrapped around
+    wav.js              # 16-bit PCM RIFF encoder
     levels.js           # Gain staging: source normalization, volume taper
     voices/             # One module per box
 ```
@@ -215,6 +218,69 @@ in a dev build (then reload), or clear the site's storage.
 
 Bumping `SCHEMA_VERSION` discards every stored patch, so reach for it only when
 a shape change can't be absorbed by the validators.
+
+## Exporting the loop
+
+The `↓ WAV` button renders the current patch to a file. It does not record the
+speakers — it rebuilds the rack in an `OfflineAudioContext` and renders as fast
+as the machine manages, through `createMasterBus` and `BoxChannel`, the
+engine's own. Same voices, same gate, same limiting; the file is what you were
+listening to, minus every dropout.
+
+Two things differ from playback, both deliberately.
+
+**No transport.** An envelope is automation on an AudioParam, and automation
+can be scheduled arbitrarily far ahead, so the whole loop goes down in one pass
+before rendering starts. Nothing can arrive late because there is no clock to
+fall behind — `fireTrigger`'s lateness guard never fires, since every trigger
+is scheduled while the offline clock still reads zero.
+
+**The tail wraps.** Reverb and comb tails outlive the bar they were struck in.
+The render runs `tail` seconds past the loop end and sums what is still ringing
+back onto the start, modulo the loop length — the periodic summation of the
+pattern, which is what an infinite repeat would sound like. So the file loops
+rather than gating off at the boundary, and it stays one loop long instead of
+growing a fade-out that can't be looped at all. A tail longer than the loop
+wraps more than once, as a repeat would.
+
+`voiceTail()` in `voices/index.js` sizes that overhang: the two reverbs report
+their decay, Arithmetic reports nothing, and Geometry's comb rings for at most
+~0.6 s even at full resonance — inside the 1.3 s floor the longest gate
+envelope needs anyway. A 0.5 s pre-roll is rendered and discarded, because
+every control reaches a freshly built voice as a 30–100 ms ramp and a trigger
+at position 0 would otherwise catch the pitch still gliding.
+
+Two things have to be waited for before rendering: reverb impulse responses
+(generated rather than loaded) and Geometry's comb (an AudioWorklet). Render
+ahead of either and that part of the graph is silent or unconnected.
+`voice.ready()` covers the first — and for Music it also settles the debounced
+DECAY, since nobody waits 220 ms inside an offline render.
+
+Measured at 120 BPM (an 8 s loop) on the seed pattern: the loop point jumps
+0.0094, against a largest interior sample-to-sample step of 0.0636 — the seam
+moves less than the signal routinely does. It is not sample-exact and can't be:
+the oscillators and LFOs are free-running, so no two repeats are identical.
+Proof the wrap lands: a single Music hit at position 0.90 with HALL up puts
+0.023 RMS into the first second of the file, and 0.000 with HALL down.
+
+The result is peak-checked afterwards. The wrap adds signal the master limiter
+never saw, so a peak that sat under the ceiling in real time can land over full
+scale here; the file is scaled back rather than clipped.
+
+### The global context is not yours
+
+`Tone.Offline` swaps Tone's **global** context for the duration of the callback
+that builds the render graph — and that callback awaits impulse responses, so
+the window is long enough for a knob turn or a play press to land inside it.
+Anything reading `Tone.getContext()` or `Tone.getTransport()` at that moment
+addresses the render instead of the app: a tempo change that never arrives,
+triggers scheduled onto a transport that is about to be thrown away.
+
+So nothing reads the global. `AudioEngine` captures `context` and `transport`
+at construction, `BoxChannel` captures the context its nodes were built on,
+`lifecycle.js` goes through `engine.context`, and Astronomy reads its sample
+rate off its own filter node. Verified by calling `engine.setBpm(155)` from
+inside the swap window: the live transport gets it, the render does not.
 
 ## Level calibration
 

@@ -43,9 +43,13 @@ const MAX_LATENESS = 0.1
  * The FX sit after the gate on purpose, so reverb and comb tails ring on past
  * the envelope the way they would on a real pedal.
  */
-class BoxChannel {
+export class BoxChannel {
   constructor(destination, boxId) {
     this.boxId = boxId
+    // Whichever context this channel's nodes were built on. Never re-read from
+    // the global: an offline render swaps that out from under a live app —
+    // see audio/render.js.
+    this.context = Tone.getContext()
     this.voice = createVoice(boxId)
 
     this.voiceGain = new Tone.Gain(1)   // voice source, muted when a sample loads
@@ -112,7 +116,12 @@ class BoxChannel {
     this.player = null
   }
 
-  start(loopEnd) {
+  /**
+   * `sync: false` runs the sample off its own clock instead of the transport —
+   * what an offline render needs, since it lays the whole loop out as
+   * automation and never starts a transport at all.
+   */
+  start(loopEnd, { sync = true } = {}) {
     this.voice.start()
     this._stopPlayer()
     if (this.useSample && this.buffer) {
@@ -120,8 +129,19 @@ class BoxChannel {
       this.player.loop = true
       this.player.loopEnd = Math.min(this.buffer.duration, loopEnd)
       this.player.connect(this.sampleGain)
-      this.player.sync().start(0)
+      if (sync) this.player.sync().start(0)
+      else this.player.start(0)
     }
+  }
+
+  /**
+   * Resolves once the voice's asynchronously-built pieces are in place — the
+   * reverb impulse responses, which are rendered rather than loaded. Only an
+   * offline render has to wait: in real time they land while the gate is still
+   * shut. See audio/voices/index.js.
+   */
+  ready() {
+    return this.voice.ready ? this.voice.ready() : Promise.resolve()
   }
 
   stop() {
@@ -130,7 +150,7 @@ class BoxChannel {
   }
 
   fireTrigger(time, direction, velocity = 'high') {
-    const now = Tone.getContext().currentTime
+    const now = this.context.currentTime
 
     // A stalled clock hands over every trigger it slept through at once, all of
     // them past due. Clamping them to `now` used to stack a whole window of
@@ -181,7 +201,7 @@ class BoxChannel {
 
   /** Slam the gate shut. The recovery path when an envelope was left half-built. */
   panicGate() {
-    const now = Tone.getContext().currentTime
+    const now = this.context.currentTime
     try {
       this.gateGain.gain.cancelScheduledValues(now)
       this.gateGain.gain.setValueAtTime(0, now)
@@ -199,7 +219,7 @@ class BoxChannel {
    * genuinely stranded gate gets cut.
    */
   recoverStuckGate() {
-    const now = Tone.getContext().currentTime
+    const now = this.context.currentTime
     if (now <= this.gateCloseAt + 0.05) return
     if (this.gateGain.gain.value <= EPSILON) return
     this.gateGain.gain.cancelScheduledValues(now)
@@ -225,14 +245,40 @@ class BoxChannel {
   }
 }
 
+/** Ceiling on the master bus, in dB. */
+const MASTER_CEILING = -1
+
+/**
+ * Master gain → limiter → output, built on whatever context is current.
+ *
+ * The offline renderer builds its own, so an exported file leaves through the
+ * same chain you were listening through rather than an approximation of it.
+ */
+export function createMasterBus(volume) {
+  // Four boxes hitting at once needs headroom; the limiter is the backstop.
+  const master = new Tone.Gain(volumeToGain(volume))
+  const limiter = new Tone.Limiter(MASTER_CEILING)
+  master.connect(limiter)
+  limiter.toDestination()
+  return master
+}
+
+/** One loop is 4 bars of 4 beats. */
+export function barLengthFor(bpm) {
+  return (60 / bpm) * 4 * 4
+}
+
 // Main audio engine
 class AudioEngine {
   constructor() {
-    // Four boxes hitting at once needs headroom; the limiter is the backstop.
-    this.master = new Tone.Gain(volumeToGain(0.8))
-    this.masterLimiter = new Tone.Limiter(-1)
-    this.master.connect(this.masterLimiter)
-    this.masterLimiter.toDestination()
+    // Captured once, rather than read from the global on every call: an
+    // offline render swaps the global context for the duration of its setup,
+    // and a knob or a play press landing in that window would otherwise
+    // address the render's transport instead of this one. See audio/render.js.
+    this.context = Tone.getContext()
+    this.transport = this.context.transport
+
+    this.master = createMasterBus(0.8)
 
     this.channels = new Map() // boxId → BoxChannel
     // `${boxId}:${triggerId}` → { id, trigger }. The trigger record is mutable
@@ -246,16 +292,14 @@ class AudioEngine {
   }
 
   _calcBarLength(bpm) {
-    // 4 bars × 4 beats
-    return (60 / bpm) * 4 * 4
+    return barLengthFor(bpm)
   }
 
   setBpm(bpm) {
     this.bpm = bpm
     this.barLength = this._calcBarLength(bpm)
-    const transport = Tone.getTransport()
-    transport.bpm.value = bpm
-    if (this.playing) transport.loopEnd = this.barLength
+    this.transport.bpm.value = bpm
+    if (this.playing) this.transport.loopEnd = this.barLength
   }
 
   setMasterVolume(position) {
@@ -310,7 +354,7 @@ class AudioEngine {
   }
 
   _scheduleOne(boxId, channel, trigger) {
-    const eventId = Tone.getTransport().schedule((time) => {
+    const eventId = this.transport.schedule((time) => {
       // Tone dispatches every tick due in one pass and aborts the whole
       // pass on a throw, so an unhappy box would silence the other three
       // for that window. Contain it here.
@@ -348,23 +392,24 @@ class AudioEngine {
 
     const channel = this.channels.get(boxId)
     if (!channel) return
-    try { Tone.getTransport().clear(entry.id) } catch (_) {}
+    try { this.transport.clear(entry.id) } catch (_) {}
     this.scheduledEvents.delete(key)
     this._scheduleOne(boxId, channel, entry.trigger)
   }
 
   _clearScheduled() {
-    const transport = Tone.getTransport()
     this.scheduledEvents.forEach(({ id }) => {
-      try { transport.clear(id) } catch (_) {}
+      try { this.transport.clear(id) } catch (_) {}
     })
     this.scheduledEvents.clear()
   }
 
   async start(boxesData) {
     if (this.playing) return
-    await Tone.start()
-    const transport = Tone.getTransport()
+    // Tone.start() resumes the *global* context; this engine owns a specific
+    // one, and during an export the two are briefly not the same.
+    await this.context.resume()
+    const transport = this.transport
 
     transport.bpm.value = this.bpm
     transport.loop = true
@@ -380,8 +425,7 @@ class AudioEngine {
   }
 
   stop() {
-    const transport = Tone.getTransport()
-    transport.stop()
+    this.transport.stop()
     this._clearScheduled()
 
     this.channels.forEach((channel) => {
@@ -408,7 +452,7 @@ class AudioEngine {
    */
   resync() {
     if (!this.playing) return
-    if (Tone.getContext().rawContext.state !== 'running') return
+    if (this.context.rawContext.state !== 'running') return
 
     this._startPlayheadRaf()
     this._scheduleTriggers(this._boxesData)
@@ -417,7 +461,7 @@ class AudioEngine {
     // rAF was frozen while we were away, so the playhead's last known position
     // is stale by however long that was. Republish it as a discontinuity so
     // subscribers don't read the jump as "the playhead crossed all of these".
-    const pos = Tone.getTransport().seconds % this.barLength
+    const pos = this.transport.seconds % this.barLength
     publishPlayhead(pos / this.barLength, true)
   }
 
@@ -428,8 +472,7 @@ class AudioEngine {
         this._rafId = null
         return
       }
-      const transport = Tone.getTransport()
-      const pos = transport.seconds % this.barLength
+      const pos = this.transport.seconds % this.barLength
       publishPlayhead(pos / this.barLength)
       this._rafId = requestAnimationFrame(tick)
     }
